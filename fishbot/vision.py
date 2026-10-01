@@ -97,7 +97,33 @@ class ColorFinder:
                      int(stats[i, cv2.CC_STAT_HEIGHT]), 1.0, float(area))
 
 
+class BarFinder:
+    """Albion reel minigame: the bobber (white float) on the green/red band.
+
+    The search region spans the band plus the space above it (the bobber sticks up).
+    ``zone`` holds the green span of the last frame; no green means the minigame is over.
+    """
+
+    def __init__(self):
+        self.zone: tuple[float, float] | None = None
+
+    def find(self, frame: np.ndarray) -> Match | None:
+        from .learn import find_float, green_span
+        h = frame.shape[0]
+        band = frame[int(h * 0.45):]             # lower part of the region is the band itself
+        self.zone = green_span(band, 0.3)
+        if self.zone is None:
+            return None
+        f = find_float(frame)
+        if f is None:
+            return None
+        cx, cy, w, hh, area = f
+        return Match(cx, cy, w, hh, 1.0, area)
+
+
 def make_finder(method: str, template: np.ndarray | None, cfg, name: str):
+    if method == "bar":
+        return BarFinder()
     if method == "color":
         return ColorFinder(cfg.hsv_lo, cfg.hsv_hi, cfg.min_area)
     if template is None:

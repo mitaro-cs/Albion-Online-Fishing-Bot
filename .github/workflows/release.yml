@@ -31,7 +31,8 @@ jobs:
           --paths .
           --add-data "fishbot/web;fishbot/web"
           --collect-submodules fishbot
-          --collect-all pyaudiowpatch
+          --collect-all pycaw
+          --collect-submodules comtypes
           packaging/launcher.py
 
       - name: Smoke test
@@ -46,20 +47,26 @@ jobs:
           Stop-Process -Name AlbionFishingBot -Force -ErrorAction SilentlyContinue
           if (-not $ok) { Get-Content "$env:RUNNER_TEMP\smoke\fishbot.log" -ErrorAction SilentlyContinue; throw "exe did not serve the UI" }
 
-      - name: Uninstall test (nothing left behind)
+      - name: Storage + uninstall test (registry, nothing left behind)
         shell: pwsh
         run: |
           $d = Join-Path $env:RUNNER_TEMP "uninst"
+          $reg = "HKCU:\Software\AlbionFishingBot"
+          $files = Join-Path $env:LOCALAPPDATA "AlbionFishingBot"
           New-Item -ItemType Directory $d | Out-Null
           Copy-Item dist/AlbionFishingBot.exe $d
           $p = Start-Process "$d\AlbionFishingBot.exe" -ArgumentList "--demo","--browser","--port","8791" -PassThru
-          for ($i = 0; $i -lt 90 -and -not (Test-Path "$d\data\settings.json"); $i++) { Start-Sleep 1 }
+          for ($i = 0; $i -lt 90 -and -not (Test-Path "$reg\profiles\Demo"); $i++) { Start-Sleep 1 }
+          Start-Sleep 2
           Stop-Process -Name AlbionFishingBot -Force -ErrorAction SilentlyContinue
           Start-Sleep 2
-          if (-not (Test-Path "$d\data")) { throw "exe did not create data/ next to itself" }
+          if (-not (Test-Path "$reg\profiles\Demo")) { throw "profiles were not stored in the registry" }
+          if (Test-Path "$d\data") { throw "the exe created a data folder next to itself" }
           Start-Process "$d\AlbionFishingBot.exe" -ArgumentList "--uninstall" -Wait
-          for ($i = 0; $i -lt 60 -and (Test-Path $d); $i++) { Start-Sleep 1 }
-          if (Test-Path $d) { Get-ChildItem -Recurse $d; throw "uninstall left files behind" }
+          for ($i = 0; $i -lt 60 -and ((Test-Path $d) -or (Test-Path $files)); $i++) { Start-Sleep 1 }
+          if (Test-Path $reg) { throw "registry key left behind" }
+          if (Test-Path $files) { Get-ChildItem -Recurse $files; throw "files left in LOCALAPPDATA" }
+          if (Test-Path $d) { Get-ChildItem -Recurse $d; throw "exe folder left behind" }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -82,7 +89,7 @@ jobs:
           make_latest: true
           files: dist/AlbionFishingBot.exe
           body: |
-            **AlbionFishingBot.exe** — один файл, установка не нужна. Положите в отдельную папку и запустите: профили и шаблоны сохраняются рядом, в `data/`.
+            **AlbionFishingBot.exe** — один файл, установка не нужна. Просто запустите: настройки хранятся в реестре, рядом с exe ничего не появляется. Обновляется сам, удаляется кнопкой в настройках без следов.
 
             - Windows 10/11 (окно использует WebView2 — он есть в системе; без него интерфейс откроется в браузере)
             - Попробовать без игры: `AlbionFishingBot.exe --demo`

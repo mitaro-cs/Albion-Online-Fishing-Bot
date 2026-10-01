@@ -14,7 +14,7 @@ import numpy as np
 
 from . import __version__
 from .capture import Screen
-from .config import TEMPLATES, Config, ProfileStore, Region, schema, write_image
+from .config import TEMPLATES, Config, ProfileStore, Region, schema
 from .controls import Input
 from .engine import Engine
 from .hotkeys import Hotkeys
@@ -93,10 +93,21 @@ class Api:
         self._audio.stop()
         self._updater.finish()
 
+    LEARN_VERSION = 3  # bump when what auto-learn stores changes, so old guesses get relearned
+
     def _load(self) -> None:
         with self._lock:
             self._cfg = self._store.load(self._profile)
             self._templates = self._store.templates(self._profile)
+            sysc = self._cfg.system
+            if sysc.auto_learn and sysc.learn_version < self.LEARN_VERSION:
+                # earlier versions could mistake other UI for the reel bar: learn it again
+                self._store.delete_template(self._profile, "marker")
+                self._templates = self._store.templates(self._profile)
+                self._cfg = self._cfg.merged({"regions": {"reel": asdict(Region())},
+                                              "reel": {"method": "bar", "hold_moves": "auto"},
+                                              "system": {"learn_version": self.LEARN_VERSION}})
+                self._store.save(self._profile, self._cfg)
             self._engine.configure(self._cfg, self._templates)
             self._bind_hotkeys()
             settings = self._store.settings()
@@ -128,8 +139,15 @@ class Api:
                 st["left"] = (x, y)
             else:
                 lx, ly = st["left"]
-                tpl, region = find_marker(self._screen, lx, x, (ly + y) // 2)
-                self._save_setup("marker", tpl, {"regions": {"reel": asdict(region)}, "reel": {"method": "template"}})
+                region = self._green_bar_near(lx, x, (ly + y) // 2)
+                if region is not None:  # Albion's green/red band: no template needed
+                    with self._lock:
+                        self._store.delete_template(self._profile, "marker")
+                        self._templates = self._store.templates(self._profile)
+                        self._commit(self._cfg.merged({"regions": {"reel": asdict(region)}, "reel": {"method": "bar"}}))
+                else:
+                    tpl, region = find_marker(self._screen, lx, x, (ly + y) // 2)
+                    self._save_setup("marker", tpl, {"regions": {"reel": asdict(region)}, "reel": {"method": "template"}})
             st["step"] += 1
             if st["step"] >= len(STEPS):
                 st["active"], st["done"] = False, True
@@ -148,15 +166,27 @@ class Api:
         if tpl is None:  # a config change, or "forget this template"
             with self._lock:
                 if name:
-                    self._store.template_path(self._profile, name).unlink(missing_ok=True)
+                    self._store.delete_template(self._profile, name)
                     self._templates = self._store.templates(self._profile)
                 self._commit(self._cfg.merged(patch))
             return
         self._save_setup(name, tpl, patch)
 
+    def _green_bar_near(self, x0: int, x1: int, y: int):
+        from .learn import find_green_bar
+        left, right = sorted((int(x0), int(x1)))
+        pad = max(40, (right - left) // 4)
+        area = Region(left - pad, int(y) - 120, right - left + 2 * pad, 240)
+        band = find_green_bar(self._screen.grab(area))
+        if band is None:
+            return None
+        bx, by, bw, bh = band
+        top = max(0, by - bh)
+        return Region(area.left + bx, area.top + top, bw, by + bh - top + 1)
+
     def _save_setup(self, name: str, tpl, patch: dict) -> None:
         with self._lock:
-            write_image(self._store.template_path(self._profile, name), tpl)
+            self._store.save_template(self._profile, name, tpl)
             self._templates = self._store.templates(self._profile)
             self._commit(self._cfg.merged(patch))
 
@@ -310,7 +340,7 @@ class Api:
         self._updater.state["status"] = "off"  # don't swap in a pending update afterwards
         self._hotkeys.stop()
         logging.shutdown()
-        result = run(self._store.root)
+        result = run(self._store)
         self._gone = True
 
         def close():
@@ -327,7 +357,7 @@ class Api:
         self._halt()
         with self._lock:
             for name in ("bobber", "marker"):
-                self._store.template_path(self._profile, name).unlink(missing_ok=True)
+                self._store.delete_template(self._profile, name)
             self._templates = self._store.templates(self._profile)
             cfg = Config.from_dict(self._cfg.to_dict())
             cfg.regions.bobber = Region()
@@ -405,7 +435,7 @@ class Api:
         if crop.shape[0] < 4 or crop.shape[1] < 4:
             raise ValueError("selection too small")
         with self._lock:
-            write_image(self._store.template_path(self._profile, name), crop)
+            self._store.save_template(self._profile, name, crop)
             self._templates = self._store.templates(self._profile)
             patch = {}
             if name == "bobber" and not self._cfg.regions.bobber.ok:
@@ -418,8 +448,7 @@ class Api:
     @endpoint
     def clear_template(self, name: str):
         with self._lock:
-            p = self._store.template_path(self._profile, name)
-            p.unlink(missing_ok=True)
+            self._store.delete_template(self._profile, name)
             self._templates = self._store.templates(self._profile)
             self._engine.configure(self._cfg, self._templates)
             return {"templates": self._thumbs()}
@@ -485,4 +514,4 @@ class Api:
 
     @endpoint
     def open_folder(self):
-        open_path(str(self._store.path(self._profile).resolve()))
+        open_path(str(self._store.root.resolve()))

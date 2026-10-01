@@ -23,10 +23,10 @@ import numpy as np
 from .capture import Screen
 from .config import Config, Region
 from .controller import ReelController
-from .learn import find_marker, find_new_bar, find_new_object, green_span
+from .learn import find_float, find_green_bar, find_marker, find_new_bar, find_new_object, green_span
 from .controls import Input
 from .system import beep, foreground_title
-from .vision import (BLUE, GREEN, PINK, RED, YELLOW, Match, TemplateFinder, VisionError, draw_box,
+from .vision import (BarFinder, BLUE, GREEN, PINK, RED, YELLOW, Match, TemplateFinder, VisionError, draw_box,
                      draw_reel, make_finder)
 
 
@@ -355,7 +355,7 @@ class Engine:
             if not r.bobber.ok:
                 raise VisionError("region_missing", name="bobber")
             make_finder(cfg.bite.method, tpl.get("bobber"), cfg.bite, "bobber")
-        if r.reel.ok and (cfg.reel.method == "color" or "marker" in tpl):
+        if r.reel.ok and (cfg.reel.method in ("color", "bar") or "marker" in tpl):
             marker = make_finder(cfg.reel.method, tpl.get("marker"), cfg.reel, "marker")
         elif not learn:
             if not r.reel.ok:
@@ -582,19 +582,22 @@ class Engine:
                         self.stats.hooks += 1
                         self._emit("reel_start")
                     if ctrl is None:  # first minigame: find out which way holding pushes the marker
-                        rc = replace(rc, hold_moves=self._probe_hold(region, rc, span, m.w))
+                        rc = replace(rc, hold_moves=self._probe_hold(region, rc, span,
+                                                                     m.w if rc.method == "template" else 0))
                         ctrl = ReelController(rc)
                         t = self.clock.now()
                     last_seen, last_x, self.reel_x = t, x, x
-                    zone = green_span(frame)  # keep the marker inside the green zone, wherever it is
+                    # keep the marker in the middle of the green zone, wherever it is
+                    zone = self._marker.zone if isinstance(self._marker, BarFinder) else green_span(frame)
                     tgt = band = None
                     if zone is not None:
                         W = frame.shape[1]
-                        tgt = min(1.0, max(0.0, ((zone[0] + zone[1]) / 2 * W - m.w / 2) / span))
-                        band = max(0.02, (zone[1] - zone[0]) * W / span * 0.45)
+                        off = m.w / 2 if rc.method == "template" else 0
+                        tgt = min(1.0, max(0.0, ((zone[0] + zone[1]) / 2 * W - off) / span))
+                        band = max(0.02, (zone[1] - zone[0]) * W / span * 0.3)
                     self.reel_target = tgt
                     xs.append(x)
-                    if (learned and len(xs) >= 40 and max(xs) - min(xs) < 0.006
+                    if (learned and rc.method == "template" and len(xs) >= 40 and max(xs) - min(xs) < 0.006
                             and t - started > 1.2):  # "marker" never moves: we learned the wrong thing
                         self._forget_bar()
                         return "no_game", 0.0
@@ -715,6 +718,21 @@ class Engine:
         while self.clock.now() < deadline:
             self._sleep(0.12)
             after = self._grab(mon)
+            band = find_green_bar(after)  # Albion's band: green middle, red chevron ends, bobber on top
+            if band is not None:
+                bx, by, bw, bh = band
+                top = max(0, by - bh)
+                region = Region(mon.left + bx, mon.top + top, bw, by + bh - top + 1)
+                finder = BarFinder()
+                if find_float(after[top:by + bh + 1, bx:bx + bw]) is not None and finder.find(self._grab(region)):
+                    self._marker = finder
+                    self._adopt_cfg({"regions": {"reel": asdict(region)}, "reel": {"method": "bar"}}, forget="marker")
+                    cfg = self._cfg
+                    self._emit("learn_bar", "success", w=bw)
+                    shot = after.copy()
+                    cv2.rectangle(shot, (bx, top), (bx + bw, by + bh), (99, 230, 245), 2)
+                    self._debug("bar-learned", shot)
+                    return cfg
             bar = find_new_bar(before, after)
             if bar is None:
                 continue

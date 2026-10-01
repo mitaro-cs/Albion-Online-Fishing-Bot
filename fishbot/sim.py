@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from .capture import Screen
-from .config import Config, ProfileStore, Region, write_image
+from .config import Config, ProfileStore, Region
 from .controls import Input
 from .engine import Clock
 
@@ -108,7 +108,8 @@ class SimGame:
         """Green zone (centre, width) the marker has to stay in — it drifts along the bar."""
         if not self.green:
             return 0.5, 1.0
-        return 0.5 + 0.26 * math.sin(0.8 * (self.t - self.state_t) + self.zone_phase), 0.24
+        # like the real game: a wide green middle (it may drift a little), chevron ends outside it
+        return 0.5 + 0.05 * math.sin(0.8 * (self.t - self.state_t) + self.zone_phase), 0.56
 
     def _start_reel(self) -> None:
         self.x, self.v, self.progress, self.outside = 0.5, 0.0, 0.0, 0.0
@@ -238,20 +239,35 @@ def draw_spot(img, x: float, y: float, t: float) -> None:
 
 
 def draw_bar(img, x: float, y: float, pos: float, progress: float, zone=None) -> None:
+    """Albion-style minigame: chevron band with red ends and a green middle, the bobber riding on
+    it, and a blue progress bar with a fish below."""
     x, y = int(x), int(y)
-    cv2.rectangle(img, (x - 3, y - 3), (x + BAR.width + 2, y + BAR.height + 2), (24, 24, 26), -1)
-    cv2.rectangle(img, (x, y), (x + BAR.width - 1, y + BAR.height - 1), (58, 52, 46), -1)
-    cv2.rectangle(img, (x - 3, y - 3), (x + BAR.width + 2, y + BAR.height + 2), (190, 190, 190), 1)
-    if zone is not None:
-        zc, zw = zone
-        z0, z1 = int(x + (zc - zw / 2) * BAR.width), int(x + (zc + zw / 2) * BAR.width)
-        cv2.rectangle(img, (max(x, z0), y + 2), (min(x + BAR.width - 1, z1), y + BAR.height - 3), (70, 190, 80), -1)
-    cv2.line(img, (x, y - 8), (x + int(BAR.width * min(1.0, progress)), y - 8), (225, 225, 225), 3)
-    mx = x + MARKER_W // 2 + pos * (BAR.width - MARKER_W)
-    cy = y + BAR.height // 2
-    cv2.ellipse(img, (int(mx), cy), (MARKER_W // 2 - 1, MARKER_H // 2 - 2), 0, 0, 360, (20, 20, 20), -1, cv2.LINE_AA)
-    cv2.ellipse(img, (int(mx), cy), (MARKER_W // 2 - 3, MARKER_H // 2 - 4), 0, 0, 360, (90, 210, 245), -1, cv2.LINE_AA)
-    cv2.circle(img, (int(mx), cy - 4), 2, (20, 20, 20), -1, cv2.LINE_AA)
+    W_, H_ = BAR.width, BAR.height
+    cv2.rectangle(img, (x, y), (x + W_ - 1, y + H_ - 1), (40, 125, 235), -1)            # orange
+    for i in range(0, int(W_ * 0.22), 9):                                               # red/yellow chevrons
+        colour = (40, 45, 210) if i < W_ * 0.1 else (40, 190, 240)
+        for x0, d in ((x + i, 1), (x + W_ - 1 - i, -1)):
+            pts = np.array([[x0, y], [x0 + d * 6, y + H_ // 2], [x0, y + H_ - 1]], np.int32)
+            cv2.polylines(img, [pts], False, colour, 3, cv2.LINE_AA)
+    zc, zw = zone if zone is not None else (0.5, 0.56)
+    z0, z1 = int(x + (zc - zw / 2) * W_), int(x + (zc + zw / 2) * W_)
+    cv2.rectangle(img, (max(x, z0), y), (min(x + W_ - 1, z1), y + H_ - 1), (60, 165, 75), -1)  # green
+    # progress bar
+    py = y + H_ + 6
+    cv2.rectangle(img, (x, py), (x + W_ - 1, py + 14), (150, 90, 40), -1)
+    fx = x + 12 + int((W_ - 40) * min(1.0, progress))
+    cv2.ellipse(img, (fx, py + 7), (9, 4), 0, 0, 360, (250, 235, 215), -1, cv2.LINE_AA)
+    cv2.line(img, (fx + 10, py + 7), (x + W_ - 14, py + 7), (230, 210, 190), 1)
+    cv2.fillPoly(img, [np.array([[x + W_ - 12, py + 2], [x + W_ - 3, py + 7], [x + W_ - 12, py + 12]], np.int32)],
+                 (40, 160, 245))
+    # the bobber is the marker
+    mx = int(x + MARKER_W // 2 + pos * (W_ - MARKER_W))
+    cy = y + H_ // 2 + 3
+    feather = np.array([[mx - 2, cy - 6], [mx - 8, y - 14], [mx, y - 6], [mx + 5, y - 13], [mx + 3, cy - 6]], np.int32)
+    cv2.fillPoly(img, [feather], (40, 150, 250))
+    cv2.circle(img, (mx, cy), 7, (30, 30, 30), -1, cv2.LINE_AA)
+    cv2.ellipse(img, (mx, cy), (6, 6), 0, 180, 360, (50, 50, 225), -1, cv2.LINE_AA)
+    cv2.ellipse(img, (mx, cy), (6, 6), 0, 0, 180, (245, 245, 245), -1, cv2.LINE_AA)
 
 
 class SimScreen(Screen):
@@ -313,7 +329,9 @@ def demo_config() -> Config:
     cfg.cast.points = [[560, 300], [1040, 300], [800, 470]]
     cfg.regions.bobber = Region(WATER.left, WATER.top, WATER.width, WATER.height)
     cfg.regions.water = Region(WATER.left, WATER.top, WATER.width, WATER.height)
-    cfg.regions.reel = Region(BAR.left, BAR.top, BAR.width, BAR.height)
+    cfg.regions.reel = Region(BAR.left, BAR.top - BAR.height, BAR.width, 2 * BAR.height + 1)
+    cfg.reel.method = "bar"
+    cfg.system.learn_version = 3
     cfg.system.require_focus = False
     cfg.system.sound = False
     cfg.system.start_delay_s = 1.0
@@ -328,5 +346,5 @@ def prepare_profile(store: ProfileStore, name: str = "Demo") -> str:
     if not store.exists(name):
         store.save(name, demo_config())
         for tpl, img in make_templates().items():
-            write_image(store.template_path(name, tpl), img)
+            store.save_template(name, tpl, img)
     return name

@@ -1,9 +1,9 @@
-"""Hear the bite: watch the game's sound output for a sudden splash.
+"""Hear the bite: watch the *game's own* sound for a sudden splash.
 
-Windows only — records what the speakers play (WASAPI loopback, no microphone)
-via PyAudioWPatch. Each 20 ms block is high-passed (first difference, so music
-bass and ambience matter less) and its loudness compared with the recent
-background; a jump of ``sensitivity``× marks an onset.
+Windows only. Instead of recording the speakers, it reads the peak meter of the
+Albion Online audio session (the same meter as in Windows' Volume Mixer) via
+pycaw, so music, Discord or a browser never trigger it. A jump of
+``sensitivity``× above the recent background marks an onset.
 """
 from __future__ import annotations
 
@@ -44,11 +44,29 @@ class OnsetDetector:
     def onset_after(self, t: float) -> bool:
         return any(o > t for o in self.onsets)
 
+    def feed_level(self, level: float, t: float) -> bool:
+        """Same as feed() for an already measured loudness (0..1 peak meter)."""
+        hit = False
+        if len(self.levels) >= 40:
+            background = float(np.median(self.levels))
+            loud = level > max(self.floor, background * self.sensitivity)
+            if loud and self._armed:
+                self.onsets.append(t)
+                hit = True
+            self._armed = not loud
+        if not hit:
+            self.levels.append(level)
+        return hit
+
 
 class AudioWatcher:
+    """Polls the game's audio-session peak meter ~100 times a second."""
+
+    PROCESS = "albion"
+
     def __init__(self, sensitivity: float = 4.0):
-        self.detector = OnsetDetector(sensitivity)
-        self.ok = False
+        self.detector = OnsetDetector(sensitivity, floor=0.04, history=300)
+        self.ok = False      # attached to the game's audio session right now
         self.error = ""
         self._stop = threading.Event()
 
@@ -64,49 +82,51 @@ class AudioWatcher:
 
     def start(self) -> None:
         if sys.platform != "win32":
-            self.error = "audio capture is Windows-only"
+            self.error = "audio is Windows-only"
             return
         threading.Thread(target=self._run, name="fishbot-audio", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()
 
+    def _find_meter(self):
+        from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
+        for session in AudioUtilities.GetAllSessions():
+            proc = session.Process
+            if proc is not None and self.PROCESS in proc.name().lower():
+                return session._ctl.QueryInterface(IAudioMeterInformation)
+        return None
+
     def _run(self) -> None:
         try:
-            import pyaudiowpatch as pyaudio
-        except ImportError:
-            self.error = "PyAudioWPatch is not installed"
-            return
-        pa = stream = None
-        try:
-            pa = pyaudio.PyAudio()
-            wasapi = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-            speakers = pa.get_device_info_by_index(wasapi["defaultOutputDevice"])
-            if not speakers.get("isLoopbackDevice"):
-                for dev in pa.get_loopback_device_info_generator():
-                    if speakers["name"] in dev["name"]:
-                        speakers = dev
-                        break
-            rate = int(speakers["defaultSampleRate"])
-            channels = max(1, int(speakers["maxInputChannels"]))
-            block = rate // 50
-            stream = pa.open(format=pyaudio.paInt16, channels=channels, rate=rate, input=True,
-                             input_device_index=speakers["index"], frames_per_buffer=block)
-            self.ok = True
-            log.info("listening to %s for bite sounds", speakers["name"])
-            while not self._stop.is_set():
-                raw = stream.read(block, exception_on_overflow=False)
-                data = np.frombuffer(raw, dtype=np.int16).reshape(-1, channels).mean(axis=1)
-                self.detector.feed(data, self.now())
-        except Exception as e:  # no output device, exclusive mode, …: just go without sound
-            self.error = str(e)
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception as e:
+            self.error = f"pycaw unavailable: {e}"
             log.warning("bite sound detection unavailable: %s", e)
+            return
+        meter, next_look = None, 0.0
+        try:
+            while not self._stop.is_set():
+                now = self.now()
+                if meter is None and now >= next_look:
+                    try:
+                        meter = self._find_meter()
+                    except Exception as e:
+                        self.error = str(e)
+                    next_look = now + 3.0
+                    if meter is not None:
+                        log.info("listening to the game's own sound for bites")
+                self.ok = meter is not None
+                if meter is not None:
+                    try:
+                        self.detector.feed_level(float(meter.GetPeakValue()), now)
+                    except Exception:  # game closed or its session went away: look again
+                        meter = None
+                self._stop.wait(0.01)
         finally:
             self.ok = False
             try:
-                if stream is not None:
-                    stream.close()
-                if pa is not None:
-                    pa.terminate()
+                comtypes.CoUninitialize()
             except Exception:
                 pass

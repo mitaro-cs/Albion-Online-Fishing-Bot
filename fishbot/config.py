@@ -83,7 +83,7 @@ class BiteCfg:
 
 @dataclass
 class ReelCfg:
-    method: str = choice("template", "template", "color")
+    method: str = choice("bar", "bar", "template", "color")
     threshold: float = num(0.65, 0.3, 0.99, 0.01)
     control: str = choice("predictive", "predictive", "hysteresis")
     target: float = num(0.5, 0.1, 0.9, 0.01)
@@ -112,8 +112,8 @@ class Action:
 
 @dataclass
 class SessionCfg:
-    cooldown_ms: int = num(1400, 0, 15000, 50, "ms")
-    cooldown_jitter_ms: int = num(600, 0, 10000, 50, "ms")
+    cooldown_ms: int = num(600, 0, 15000, 50, "ms")
+    cooldown_jitter_ms: int = num(300, 0, 10000, 50, "ms")
     max_catches: int = num(0, 0, 100000)
     max_minutes: int = num(0, 0, 1440, 5, "min")
     break_every_min: int = num(0, 0, 600, 5, "min")
@@ -131,6 +131,7 @@ class SystemCfg:
     sound: bool = True
     auto_update: bool = True
     auto_learn: bool = True
+    learn_version: int = num(0, 0, 100)
     start_delay_s: float = num(3.0, 0, 30, 0.5, "s")
     idle_fps: int = num(30, 5, 120, 5, "fps")
     hotkey_toggle: str = "f8"
@@ -310,45 +311,147 @@ def write_image(path: Path, img: np.ndarray) -> None:
     write_atomic(path, buf.tobytes())
 
 
-class ProfileStore:
+class FileBackend:
+    """Keys are path parts under a folder: ("profiles", "Default", "config.json")."""
+
     def __init__(self, root: Path):
         self.root = Path(root)
-        self.dir = self.root / "profiles"
-        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def get(self, *key: str) -> bytes | None:
+        try:
+            return self.root.joinpath(*key).read_bytes()
+        except OSError:
+            return None
+
+    def put(self, data: bytes, *key: str) -> None:
+        write_atomic(self.root.joinpath(*key), data)
+
+    def drop(self, *key: str) -> None:
+        self.root.joinpath(*key).unlink(missing_ok=True)
+
+    def children(self, *key: str) -> list[str]:
+        d = self.root.joinpath(*key)
+        return [p.name for p in d.iterdir() if p.is_dir() and not p.name.startswith(".")] if d.is_dir() else []
+
+    def values(self, *key: str) -> list[str]:
+        d = self.root.joinpath(*key)
+        return [p.name for p in d.iterdir() if p.is_file()] if d.is_dir() else []
+
+    def drop_tree(self, *key: str) -> None:
+        shutil.rmtree(self.root.joinpath(*key), ignore_errors=True)
+
+
+class RegistryBackend:
+    """Same keys, kept under HKEY_CURRENT_USER\\Software\\AlbionFishingBot: subkeys for folders,
+    binary values for files. Nothing next to the exe for anyone to delete by accident."""
+
+    BASE = r"Software\AlbionFishingBot"
+
+    def __init__(self, base: str = BASE):
+        import winreg
+        self.w, self.base = winreg, base
+        winreg.CreateKey(winreg.HKEY_CURRENT_USER, base).Close()
+
+    def _path(self, parts) -> str:
+        return "\\".join([self.base, *parts])
+
+    def get(self, *key: str) -> bytes | None:
+        w = self.w
+        try:
+            with w.OpenKey(w.HKEY_CURRENT_USER, self._path(key[:-1])) as k:
+                value, _ = w.QueryValueEx(k, key[-1])
+            return bytes(value)
+        except OSError:
+            return None
+
+    def put(self, data: bytes, *key: str) -> None:
+        w = self.w
+        with w.CreateKey(w.HKEY_CURRENT_USER, self._path(key[:-1])) as k:
+            w.SetValueEx(k, key[-1], 0, w.REG_BINARY, data)
+
+    def drop(self, *key: str) -> None:
+        w = self.w
+        try:
+            with w.OpenKey(w.HKEY_CURRENT_USER, self._path(key[:-1]), 0, w.KEY_SET_VALUE) as k:
+                w.DeleteValue(k, key[-1])
+        except OSError:
+            pass
+
+    def _enum(self, key, fn) -> list[str]:
+        w = self.w
+        out = []
+        try:
+            with w.OpenKey(w.HKEY_CURRENT_USER, self._path(key)) as k:
+                i = 0
+                while True:
+                    try:
+                        out.append(fn(k, i))
+                    except OSError:
+                        break
+                    i += 1
+        except OSError:
+            pass
+        return out
+
+    def children(self, *key: str) -> list[str]:
+        return self._enum(key, self.w.EnumKey)
+
+    def values(self, *key: str) -> list[str]:
+        return self._enum(key, lambda k, i: self.w.EnumValue(k, i)[0])
+
+    def drop_tree(self, *key: str) -> None:
+        for child in self.children(*key):
+            self.drop_tree(*key, child)
+        try:
+            self.w.DeleteKey(self.w.HKEY_CURRENT_USER, self._path(key))
+        except OSError:
+            pass
+
+
+class ProfileStore:
+    """Profiles, templates and settings on a backend (folder or registry).
+
+    ``root`` is a plain folder for disposable files: log, debug snapshots, WebView cache.
+    """
+
+    def __init__(self, root: Path, backend=None):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.backend = backend or FileBackend(self.root)
         if not self.list():
             self.save("Default", Config())
+
+    @property
+    def in_registry(self) -> bool:
+        return isinstance(self.backend, RegistryBackend)
 
     # settings.json keeps the active profile and UI preferences
     def settings(self) -> dict:
         try:
-            data = json.loads((self.root / "settings.json").read_text("utf-8"))
+            data = json.loads(self.backend.get("settings.json") or b"{}")
             return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
+        except ValueError:
             return {}
 
     def save_settings(self, data: dict) -> None:
-        write_atomic(self.root / "settings.json", json.dumps(data, ensure_ascii=False, indent=2).encode())
+        self.backend.put(json.dumps(data, ensure_ascii=False, indent=2).encode(), "settings.json")
 
     def list(self) -> list[str]:
-        return sorted((p.name for p in self.dir.iterdir() if p.is_dir() and not p.name.startswith(".")),
-                      key=str.lower)
-
-    def path(self, name: str) -> Path:
-        return self.dir / clean_name(name)
+        return sorted((n for n in self.backend.children("profiles") if self.exists(n)), key=str.lower)
 
     def exists(self, name: str) -> bool:
-        return (self.path(name) / "config.json").is_file()
+        return self.backend.get("profiles", clean_name(name), "config.json") is not None
 
     def load(self, name: str) -> Config:
         try:
-            data = json.loads((self.path(name) / "config.json").read_text("utf-8"))
-        except (OSError, ValueError):
+            data = json.loads(self.backend.get("profiles", clean_name(name), "config.json") or b"{}")
+        except ValueError:
             data = {}
         return Config.from_dict(data)
 
     def save(self, name: str, cfg: Config) -> None:
         blob = json.dumps(cfg.to_dict(), ensure_ascii=False, indent=2).encode()
-        write_atomic(self.path(name) / "config.json", blob)
+        self.backend.put(blob, "profiles", clean_name(name), "config.json")
 
     def unique(self, name: str) -> str:
         base = clean_name(name)
@@ -359,37 +462,70 @@ class ProfileStore:
             i += 1
         return out
 
+    def _copy(self, src: str, dst: str) -> None:
+        for value in self.backend.values("profiles", src):
+            data = self.backend.get("profiles", src, value)
+            if data is not None:
+                self.backend.put(data, "profiles", dst, value)
+
     def create(self, name: str, copy_from: str | None = None) -> str:
         name = self.unique(name)
         if copy_from and self.exists(copy_from):
-            shutil.copytree(self.path(copy_from), self.path(name))
+            self._copy(clean_name(copy_from), name)
         else:
             self.save(name, Config())
         return name
 
     def rename(self, old: str, new: str) -> str:
-        new = clean_name(new)
-        if new.lower() != clean_name(old).lower():
-            new = self.unique(new)
-        os.replace(self.path(old), self.path(new))
+        old, new = clean_name(old), clean_name(new)
+        if new.lower() == old.lower():
+            return old
+        new = self.unique(new)
+        self._copy(old, new)
+        self.backend.drop_tree("profiles", old)
         return new
 
     def delete(self, name: str) -> None:
         if len(self.list()) <= 1:
             raise ValueError("cannot delete the last profile")
-        shutil.rmtree(self.path(name))
+        self.backend.drop_tree("profiles", clean_name(name))
 
-    def template_path(self, name: str, tpl: str) -> Path:
+    def save_template(self, name: str, tpl: str, img: np.ndarray) -> None:
+        import cv2
         if tpl not in TEMPLATES:
             raise ValueError(f"unknown template {tpl!r}")
-        return self.path(name) / f"{tpl}.png"
+        ok, buf = cv2.imencode(".png", img)
+        if not ok:
+            raise ValueError("PNG encoding failed")
+        self.backend.put(buf.tobytes(), "profiles", clean_name(name), f"{tpl}.png")
+
+    def delete_template(self, name: str, tpl: str) -> None:
+        self.backend.drop("profiles", clean_name(name), f"{tpl}.png")
 
     def templates(self, name: str) -> dict[str, np.ndarray]:
+        import cv2
         out = {}
         for tpl in TEMPLATES:
-            p = self.template_path(name, tpl)
-            if p.is_file():
-                img = read_image(p)
+            data = self.backend.get("profiles", clean_name(name), f"{tpl}.png")
+            if data:
+                img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
                 if img is not None and img.size:
                     out[tpl] = img
         return out
+
+    def import_from(self, other: "ProfileStore") -> None:
+        """Copy every profile and the settings from another store (migration)."""
+        for name in other.list():
+            for value in other.backend.values("profiles", name):
+                data = other.backend.get("profiles", name, value)
+                if data is not None:
+                    self.backend.put(data, "profiles", name, value)
+        data = other.backend.get("settings.json")
+        if data:
+            self.backend.put(data, "settings.json")
+
+    def wipe(self) -> None:
+        """Remove every trace: the backend's data and the files folder."""
+        if self.in_registry:
+            self.backend.drop_tree()
+        shutil.rmtree(self.root, ignore_errors=True)

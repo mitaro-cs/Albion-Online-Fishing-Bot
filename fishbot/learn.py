@@ -120,11 +120,13 @@ def green_mask(img: np.ndarray) -> np.ndarray:
     return cv2.inRange(hsv, (35, 70, 60), (90, 255, 255))
 
 
-def green_span(strip: np.ndarray) -> tuple[float, float] | None:
+def green_span(strip: np.ndarray, frac: float = 0.15) -> tuple[float, float] | None:
     """The green "safe" zone on the reel bar as (start, end), 0..1 across the bar."""
-    cols = (green_mask(strip) > 0).mean(axis=0) > 0.3
+    cols = (green_mask(strip) > 0).mean(axis=0) > frac
     if not cols.any():
         return None
+    gap = max(3, int(cols.size * 0.08))  # the bobber sits on the band and splits the green
+    cols = cv2.morphologyEx(cols.astype(np.uint8)[None, :], cv2.MORPH_CLOSE, np.ones((1, gap), np.uint8))[0] > 0
     best = (0, 0)
     start = None
     for i, on in enumerate(np.append(cols, False)):
@@ -138,3 +140,45 @@ def green_span(strip: np.ndarray) -> tuple[float, float] | None:
     if best[1] - best[0] < max(3, w * 0.02):
         return None
     return best[0] / w, best[1] / w
+
+
+def find_green_bar(frame: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Albion's minigame band: a wide strip with a green middle and red/orange chevron ends.
+    Returns the band's bbox (x, y, w, h) in frame coordinates."""
+    H, W = frame.shape[:2]
+    green = cv2.morphologyEx(green_mask(frame), cv2.MORPH_CLOSE, np.ones((5, 15), np.uint8))
+    n, _, stats, _ = cv2.connectedComponentsWithStats(green, connectivity=8)
+    best, best_area = None, 0
+    for i in range(1, n):
+        x, y, w, h, area = (int(v) for v in stats[i])
+        if w >= 0.04 * W and w >= 2.5 * h and 8 <= h <= max(0.12 * H, 70) and area / (w * h) > 0.6 and area > best_area:
+            best, best_area = (x, y, w, h), area
+    if best is None:
+        return None
+    x, y, w, h = best
+    hsv = cv2.cvtColor(frame[y:y + h], cv2.COLOR_BGR2HSV)
+    hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    # chevron ends: bright red/orange/yellow (grass and water are much darker or bluer)
+    chevron = (((hue <= 32) | (hue >= 165)) & (sat > 120) & (val > 140)).mean(axis=0) > 0.25
+    reach = int(w * 0.5)
+    x0, x1 = x, x + w
+    while x0 > max(0, x - reach) and chevron[x0 - 1]:
+        x0 -= 1
+    while x1 < min(W, x + w + reach) and chevron[x1]:
+        x1 += 1
+    return x0, y, x1 - x0, h
+
+
+def find_float(img: np.ndarray) -> tuple[float, float, int, int, float] | None:
+    """The white body of the bobber riding on the band: (cx, cy, w, h, area)."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    white = cv2.inRange(hsv, (0, 0, 190), (179, 70, 255))
+    white = cv2.morphologyEx(white, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    n, _, stats, cents = cv2.connectedComponentsWithStats(white, connectivity=8)
+    if n <= 1:
+        return None
+    i = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    area = int(stats[i, cv2.CC_STAT_AREA])
+    if area < 6:
+        return None
+    return float(cents[i][0]), float(cents[i][1]), int(stats[i, 2]), int(stats[i, 3]), float(area)

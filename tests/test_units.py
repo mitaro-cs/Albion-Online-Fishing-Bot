@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import pytest
 
-from fishbot.config import Config, ProfileStore, ReelCfg, read_image, schema, write_image
+from fishbot.config import Config, ProfileStore, ReelCfg, schema
 from fishbot.controller import ReelController
 from fishbot.sim import draw_bobber, make_templates
 from fishbot.vision import ColorFinder, TemplateFinder, VisionError
@@ -46,17 +46,29 @@ def test_profile_store(tmp_path):
     name = store.create("Мост / Bridge!!")
     assert name == "Мост Bridge"
     assert store.create(name) != name             # unique names
-    renamed = store.rename(name, "Lake")
-    assert "Lake" in store.list()
     img = np.random.default_rng(0).integers(0, 255, (20, 30, 3), dtype=np.uint8)
-    write_image(store.template_path(renamed, "bobber"), img)
-    assert np.array_equal(read_image(store.template_path(renamed, "bobber")), img)
-    assert "bobber" in store.templates(renamed)
+    store.save_template(name, "bobber", img)
+    renamed = store.rename(name, "Lake")
+    assert "Lake" in store.list() and name not in store.list()
+    assert np.array_equal(store.templates(renamed)["bobber"], img)   # templates travel with the profile
+    store.delete_template(renamed, "bobber")
+    assert "bobber" not in store.templates(renamed)
     store.delete(renamed)
     assert "Lake" not in store.list()
     with pytest.raises(ValueError):
         for n in store.list():
             store.delete(n)
+
+
+def test_store_migrates_and_wipes(tmp_path):
+    old = ProfileStore(tmp_path / "old")
+    old.save_template("Default", "marker", np.full((8, 8, 3), 200, np.uint8))
+    old.save_settings({"profile": "Default"})
+    new = ProfileStore(tmp_path / "new")
+    new.import_from(old)
+    assert "marker" in new.templates("Default") and new.settings()["profile"] == "Default"
+    new.wipe()
+    assert not (tmp_path / "new").exists()
 
 
 # ── controller ──────────────────────────────────────────────────────────────

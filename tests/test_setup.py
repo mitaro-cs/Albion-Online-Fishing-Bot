@@ -43,8 +43,9 @@ def test_quick_setup_calibrates_from_cursor(tmp_path):
         assert r["setup"]["error"] == "", r["setup"]["error"]
         assert r["setup"]["done"] and not r["setup"]["active"]
         reel = r["config"]["regions"]["reel"]
+        assert r["config"]["reel"]["method"] == "bar"
         assert abs(reel["left"] - BAR.left) <= 3 and abs(reel["width"] - BAR.width) <= 5
-        assert reel["top"] <= BAR.top + 4 and reel["top"] + reel["height"] >= BAR.top + BAR.height - 4
+        assert reel["top"] < BAR.top and reel["top"] + reel["height"] >= BAR.top + BAR.height - 2
         assert api.probe("reel")["found"]
         assert api.check()["ok"]
     finally:

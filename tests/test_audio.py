@@ -50,3 +50,11 @@ def test_engine_hooks_on_the_sound():
     rig.engine.join(90)
     assert rig.engine.stats.catches == 3
     assert triggers and all(t == "sound" for t in triggers)
+
+
+def test_peak_meter_onset():
+    det = OnsetDetector(sensitivity=4.0, floor=0.04, history=300)
+    for i in range(100):
+        assert not det.feed_level(0.02 + 0.005 * (i % 3), i * 0.01)   # ambience / music bed
+    assert det.feed_level(0.4, 1.0)                                    # splash
+    assert not det.feed_level(0.35, 1.01)

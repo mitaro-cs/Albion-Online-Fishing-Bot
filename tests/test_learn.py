@@ -35,7 +35,8 @@ def test_learns_bobber_and_bar_then_fishes():
     assert eng.stats.catches == 4, codes
     reel = eng._cfg.regions.reel
     assert abs(reel.left - BAR.left) <= 6 and abs(reel.width - BAR.width) <= 12
-    assert eng._cfg.regions.bobber.ok and "bobber" in eng._templates and "marker" in eng._templates
+    assert eng._cfg.regions.bobber.ok and "bobber" in eng._templates
+    assert eng._cfg.reel.method == "bar"            # the green/red band + bobber, no template needed
 
 
 def test_learned_data_is_saved_to_profile(tmp_path):
@@ -55,7 +56,7 @@ def test_learned_data_is_saved_to_profile(tmp_path):
         assert eng.stats.catches == 2
         saved = store.load(api._profile)
         assert saved.regions.bobber.ok and saved.regions.reel.ok
-        assert set(store.templates(api._profile)) >= {"bobber", "marker"}
+        assert "bobber" in store.templates(api._profile) and saved.reel.method == "bar"
     finally:
         api.shutdown()
 
@@ -89,7 +90,8 @@ def test_ignores_static_panel_and_heals_a_wrong_bar():
     game2._start_reel()
     a_icon = game2.render(Region(505, 440, 30, 38))
     game2._set("idle")
-    cfg = eng2._cfg.merged({"regions": {"reel": {"left": 505, "top": 440, "width": panel.width - 10, "height": 38}}})
+    cfg = eng2._cfg.merged({"regions": {"reel": {"left": 505, "top": 440, "width": panel.width - 10, "height": 38}},
+                            "reel": {"method": "template"}})
     eng2.configure(cfg, {"marker": a_icon})
     eng2.start()
     eng2.join(200)

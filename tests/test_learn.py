@@ -97,3 +97,16 @@ def test_ignores_static_panel_and_heals_a_wrong_bar():
     eng2.join(200)
     codes = [e["code"] for e in events2]
     assert "relearn_bar" in codes and eng2.stats.catches == 4, codes
+
+
+def test_tallies_the_loot_banner_by_item():
+    eng, game, events = fresh_rig(seed=9)
+    eng._cfg.session.max_catches = 6
+    eng.start()
+    eng.join(200)
+    import time
+    time.sleep(0.5)  # tallies are added off the fishing thread
+    items = eng.catches.items
+    assert sum(i["count"] for i in items) == eng.stats.catches == 6
+    assert len(items) <= len(game.fish_names)
+    assert [e["code"] for e in events].count("loot") == 6

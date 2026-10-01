@@ -23,6 +23,7 @@ import numpy as np
 from .capture import Screen
 from .config import Config, Region
 from .controller import ReelController
+from .catches import CatchLog, find_banner, top_area
 from .learn import find_float, find_green_bar, find_marker, find_new_bar, find_new_object, green_span
 from .controls import Input
 from .system import beep, foreground_title
@@ -79,6 +80,7 @@ MESSAGES = {  # English fallback, used by the CLI; the UI translates codes itsel
     "learn_bar_fail": "Couldn't spot the reel bar — retrying on the next fish",
     "learn_hold": "Holding the button moves the marker {way}",
     "relearn_bar": "The learned reel bar never moves — learning it again",
+    "loot": "{name} — {count} total",
     "vision_error": "Calibration problem: {code} {name}",
 }
 
@@ -120,6 +122,8 @@ class Engine:
         self.debug_dir = None  # Path for failure snapshots
         self._escapes = 0
         self.reel_target = None
+        self.catches = CatchLog()
+        self._loot_ref = None
         self.last_trigger = ""
         self._learn_ref = None
 
@@ -179,6 +183,7 @@ class Engine:
         self._stop.clear()
         self._pause.clear()
         self.stats = Stats()
+        self.catches.reset()
         self._active_acc, self._active_t0 = 0.0, None
         self._action_last.clear()
         self._avoid.clear()
@@ -245,6 +250,7 @@ class Engine:
                 "avg_reel": round(s.reel_sum / s.catches, 2) if s.catches else 0.0,
             },
             "logs": self._logs_since(since),
+            "catch_rev": self.catches.rev,
         }
 
     def _logs_since(self, since: int) -> list[dict]:
@@ -403,6 +409,7 @@ class Engine:
             s.best_streak = max(s.best_streak, s.win_streak)
             self._avoid.clear()
             self._emit("caught", "success", s=round(took, 1))
+            self._read_loot()
         else:
             if result == "escaped":
                 self.stats.escaped += 1
@@ -555,6 +562,11 @@ class Engine:
 
     def _reel(self, cfg: Config) -> tuple[str, float]:
         self._set_stage("reel")
+        try:  # the top of the screen without a loot banner, to spot the banner later
+            self._loot_ref = (top_area(self._monitor_region()), None)
+            self._loot_ref = (self._loot_ref[0], self._grab(Region(*self._loot_ref[0])))
+        except Exception:
+            self._loot_ref = None
         if self._marker is None:
             cfg = self._learn_reel(cfg)
             if cfg is None:
@@ -631,6 +643,29 @@ class Engine:
         if outcome == "escaped" and frame is not None:
             self._debug("escaped", frame)
         return outcome, took
+
+    def _read_loot(self) -> None:
+        """Find the "you received" banner and tally it (OCR runs off the fishing thread)."""
+        if not self._loot_ref or self._loot_ref[1] is None:
+            return
+        (x, y, w, h), before = self._loot_ref
+        end = self.clock.now() + 2.0
+        while self.clock.now() < end:
+            self._sleep(0.15)
+            banner = find_banner(before, self._grab(Region(x, y, w, h)))
+            if banner is not None:
+                self._sleep(0.25)  # let its fade-in finish
+                later = find_banner(before, self._grab(Region(x, y, w, h)))
+                banner = later if later is not None else banner
+                threading.Thread(target=self._tally, args=(banner,), daemon=True).start()
+                return
+
+    def _tally(self, banner) -> None:
+        try:
+            item = self.catches.add(banner)
+            self._emit("loot", "success", name=item["name"] or "?", count=item["count"])
+        except Exception:
+            traceback.print_exc()
 
     def _probe_hold(self, region, rc, span: float, mw: int) -> str:
         """Release, then hold, and compare how the marker accelerates (velocity alone is fooled by inertia)."""

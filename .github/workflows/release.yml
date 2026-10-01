@@ -23,6 +23,15 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+      - name: Windows OCR reads text
+        run: >
+          python -c "import cv2, numpy as np; from fishbot.ocr import read_lines;
+          img = np.full((90, 520, 3), 25, np.uint8);
+          cv2.putText(img, 'Common Rudd', (20, 40), cv2.FONT_HERSHEY_DUPLEX, 1.0, (90, 205, 245), 2, cv2.LINE_AA);
+          cv2.putText(img, 'Received 3 pcs.', (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (235, 235, 235), 1, cv2.LINE_AA);
+          lines = read_lines(img); print(lines);
+          assert lines and 'Rudd' in ' '.join(lines) and '3' in ' '.join(lines), lines"
+
       - name: Build exe
         run: >
           pyinstaller --noconfirm --onefile --windowed
@@ -33,6 +42,7 @@ jobs:
           --collect-submodules fishbot
           --collect-all pycaw
           --collect-submodules comtypes
+          --collect-all winrt
           packaging/launcher.py
 
       - name: Smoke test

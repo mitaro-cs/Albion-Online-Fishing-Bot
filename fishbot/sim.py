@@ -44,6 +44,8 @@ class SimGame:
         self.invert = False  # True: holding pushes the marker left
         self.green = True    # the marker must be kept inside a moving green zone
         self.decoy = False   # a static UI panel ("A" key hint) that pops up with the minigame
+        self.loot = ("", 0.0)  # (item name, shown until) — the "you received" banner
+        self.fish_names = ["Common Rudd", "Brook Trout", "River Perch"]
         self.zone_phase = 0.0
         self.outside = 0.0
         self.spots = [self._new_spot() for _ in range(3)]
@@ -160,6 +162,7 @@ class SimGame:
                 self._set("idle")
             elif self.progress >= self.duration:
                 self.caught += 1
+                self.loot = (self.rng.choice(self.fish_names), t + 2.5)
                 spot = self.spots[self.spot_index] if self.spot_index is not None else None
                 if spot:
                     spot["fish"] -= 1
@@ -214,7 +217,9 @@ class SimGame:
                     x0, y0 = 500 - ox, 433 - oy
                     cv2.rectangle(img, (x0, y0), (x0 + 252, y0 + 49), (140, 90, 40), -1)
                     cv2.putText(img, "A", (x0 + 10, y0 + 38), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (250, 250, 250), 3, cv2.LINE_AA)
-            elif self.state == "reward":
+            if self.loot[0] and self.t < self.loot[1]:
+                draw_loot(img, W // 2 - ox, int(H * 0.12) - oy, self.loot[0])
+            if self.state == "reward":
                 cv2.putText(img, "+1", (int(W / 2 - ox - 14), int(H - 240 - oy - age * 60)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (99, 230, 245), 2, cv2.LINE_AA)
             return img
@@ -268,6 +273,20 @@ def draw_bar(img, x: float, y: float, pos: float, progress: float, zone=None) ->
     cv2.circle(img, (mx, cy), 7, (30, 30, 30), -1, cv2.LINE_AA)
     cv2.ellipse(img, (mx, cy), (6, 6), 0, 180, 360, (50, 50, 225), -1, cv2.LINE_AA)
     cv2.ellipse(img, (mx, cy), (6, 6), 0, 0, 180, (245, 245, 245), -1, cv2.LINE_AA)
+
+
+def draw_loot(img, cx: int, cy: int, name: str) -> None:
+    """Loot banner like the game's: metal bars, dark plate, gold item name, white quantity line."""
+    w, h = 520, 96
+    x0, y0 = cx - w // 2, cy - h // 2
+    cv2.rectangle(img, (x0, y0), (x0 + w, y0 + h), (22, 24, 28), -1)
+    for yy in (y0, y0 + h):
+        cv2.rectangle(img, (x0 - 20, yy - 3), (x0 + w + 20, yy + 3), (150, 160, 170), -1)
+    (tw, _), _ = cv2.getTextSize(name, cv2.FONT_HERSHEY_DUPLEX, 1.0, 2)
+    cv2.putText(img, name, (cx - tw // 2, y0 + 42), cv2.FONT_HERSHEY_DUPLEX, 1.0, (90, 205, 245), 2, cv2.LINE_AA)
+    sub = "Received 1 pcs."
+    (sw, _), _ = cv2.getTextSize(sub, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+    cv2.putText(img, sub, (cx - sw // 2, y0 + 76), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (235, 235, 235), 1, cv2.LINE_AA)
 
 
 class SimScreen(Screen):

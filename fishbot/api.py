@@ -368,8 +368,13 @@ class Api:
             return {"config": cfg.to_dict(), "templates": self._thumbs()}
 
     @endpoint
+    def catches(self):
+        return {"items": self._engine.catches.summary()}
+
+    @endpoint
     def reset_stats(self):
         self._engine.reset_stats()
+        self._engine.catches.reset()
 
     @endpoint
     def check(self):

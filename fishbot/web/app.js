@@ -349,7 +349,7 @@ function tplBlock(name, tool) {
     label.textContent = t('opt.template');
     if (src) {
       const img = new Image();
-      img.onload = () => { label.append(h('span', { class: 'unit' }, ` · ${img.naturalWidth}×${img.naturalHeight}`)); };
+      img.onload = () => { label.replaceChildren(t('opt.template'), h('span', { class: 'unit' }, ` · ${img.naturalWidth}×${img.naturalHeight}`)); };
       img.src = src;
     }
   });
@@ -595,6 +595,7 @@ function buildSimple() {
   ['regions', 'bite.use_sound', 'bite.method', 'reel.method'].forEach(p => bind(p, paintLearn));
   const power = slider('cast.power_ms');
   const card = h('section', { class: 'node simple-card' },
+    h('div', { class: 'node-head' }, h('span', { class: 'title' }, t('simple.title'))),
     h('div', { class: 's-head' },
       h('div', {}, stage, h('div', { class: 's-sub' }, t('simple.sub'))),
       h('div', { class: 's-score' }, count, rate)),
@@ -764,6 +765,7 @@ function applySnap(snap) {
   }
   if (prevStage !== snap.stage || prevStatus !== snap.status) updateStage();
   paintSimple(snap);
+  if (snap.catch_rev !== S.catchRev) { S.catchRev = snap.catch_rev; loadCatches(); }
   if (S.panel === 'stats') renderPanel();
 }
 
@@ -891,6 +893,7 @@ function renderPanel() {
       ['fps', s.fps], ['active', fmtClock(s.active_s)]];
     const reels = S.logs.filter(e => e.code === 'caught').slice(-40).map(e => +e.params.s);
     kids.push(title('tab.stats', h('button', { class: 'btn sm', onclick: () => act('reset_stats') }, ic('refresh'), t('tip.reset_stats'))),
+      (S.catches || []).length ? h('div', { class: 'loot-list' }, h('h4', {}, t('loot.title')), ...S.catches.map(lootChip)) : null,
       h('div', { class: 'grid-stats' }, cards.map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'v' }, v ?? 0), h('div', { class: 'k' }, t(`stat.${k}`))))),
       spark(reels));
   } else if (S.panel === 'templates') {
@@ -1135,6 +1138,27 @@ function cycleProfile(dir) {
   const list = S.boot.profiles;
   const i = list.indexOf(S.boot.profile);
   switchProfile(list[(i + dir + list.length) % list.length]);
+}
+
+// ── catch summary (read from the game's loot banner) ────────────────────────
+
+async function loadCatches() {
+  const r = await call('catches');
+  if (!r.ok) return;
+  S.catches = r.items;
+  const bar = $('#loot');
+  bar.hidden = !r.items.length;
+  $('.subtitle').hidden = !!r.items.length;
+  const top = [...r.items].sort((a, b) => b.count - a.count).slice(0, 4);
+  bar.replaceChildren(...[h('span', { class: 'k' }, t('loot.title')), ...top.map(lootChip),
+    r.items.length > 4 && h('span', { class: 'more-n' }, `+${r.items.length - 4}`)].filter(Boolean));
+  if (S.panel === 'stats') renderPanel();
+}
+
+function lootChip(it) {
+  return h('span', { class: 'lchip' },
+    it.name ? h('span', {}, it.name) : h('img', { src: it.image, alt: '' }),
+    h('b', {}, `×${it.count}`));
 }
 
 // ── self-update ─────────────────────────────────────────────────────────────

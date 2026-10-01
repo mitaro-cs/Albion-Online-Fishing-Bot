@@ -1,0 +1,305 @@
+"""A small fishing simulator that mimics the game's loop on a virtual screen.
+
+It powers ``--demo`` (try the UI without the game) and the end-to-end tests:
+the real engine drives it through the same Screen/Input interfaces it uses in
+the game, so casting, bite detection and the reel controller are exercised
+for real — only the pixels are synthetic.
+"""
+from __future__ import annotations
+
+import math
+import random
+import threading
+
+import cv2
+import numpy as np
+
+from .capture import Screen
+from .config import Config, ProfileStore, Region, write_image
+from .controls import Input
+from .engine import Clock
+
+W, H = 1600, 900
+WATER = Region(160, 110, 1280, 470)
+BAR = Region(600, 640, 400, 28)
+MARKER_W, MARKER_H = 18, 22
+
+
+class SimGame:
+    def __init__(self, clock: Clock | None = None, seed: int | None = None):
+        self.clock = clock or Clock()
+        self.rng = random.Random(seed)
+        self.lock = threading.RLock()
+        self.cursor = (W // 2, 420)
+        self.held = False
+        self.t = self.clock.now()
+        self.state = "idle"        # idle charging flying floating biting reel reward
+        self.state_t = self.t
+        self.bobber = (0.0, 0.0)
+        self.bite_at = 0.0
+        self.spot_index: int | None = None
+        self.x = self.v = self.progress = self.duration = 0.0
+        self.fish = (1.0, 1.0, 0.0, 0.0)
+        self.caught = self.escaped = 0
+        self.spots = [self._new_spot() for _ in range(3)]
+        self.bg = self._background()
+        nrng = np.random.default_rng(seed)
+        self.noise = [nrng.integers(0, 7, (H, W, 3), dtype=np.uint8) for _ in range(3)]
+
+    # ── world ───────────────────────────────────────────────────────────────
+
+    def _new_spot(self) -> dict:
+        for _ in range(50):
+            x = self.rng.uniform(WATER.left + 80, WATER.left + WATER.width - 80)
+            y = self.rng.uniform(WATER.top + 60, WATER.top + WATER.height - 60)
+            if all((x - s["x"]) ** 2 + (y - s["y"]) ** 2 > 220 ** 2 for s in getattr(self, "spots", [])):
+                break
+        return {"x": x, "y": y, "fish": self.rng.randint(3, 5), "respawn": 0.0}
+
+    def _background(self) -> np.ndarray:
+        yy = np.linspace(0, 1, H, dtype=np.float32)[:, None]
+        xx = np.linspace(0, 1, W, dtype=np.float32)[None, :]
+        b = 92 + 40 * yy + 10 * np.sin(xx * 9 + yy * 5)
+        g = 70 + 26 * yy + 8 * np.sin(xx * 7 - yy * 4)
+        r = 30 + 10 * yy + 0 * xx
+        img = np.dstack([b, g, r]).astype(np.uint8)
+        rng = np.random.default_rng(7)
+        for _ in range(260):  # long soft wave streaks
+            x, y = int(rng.integers(0, W)), int(rng.integers(0, H))
+            cv2.ellipse(img, (x, y), (int(rng.integers(18, 70)), 2), 0, 0, 360, (150, 120, 70), 1, cv2.LINE_AA)
+        shore = WATER.top + WATER.height + 70
+        img[shore:] = (38, 52, 60)
+        cv2.circle(img, (W // 2, shore + 90), 22, (60, 90, 120), -1, cv2.LINE_AA)
+        return cv2.GaussianBlur(img, (3, 3), 0)
+
+    # ── input events ────────────────────────────────────────────────────────
+
+    def press(self) -> None:
+        with self.lock:
+            self.advance()
+            self.held = True
+            if self.state == "idle":
+                self._set("charging")
+            elif self.state == "floating":
+                self._set("idle")            # reeled the empty line in
+            elif self.state == "biting":
+                self._start_reel()
+
+    def release(self) -> None:
+        with self.lock:
+            self.advance()
+            self.held = False
+            if self.state == "charging":
+                if self.t - self.state_t >= 0.1 and WATER.contains(*self.cursor):
+                    self.bobber = (self.cursor[0] + self.rng.uniform(-6, 6), self.cursor[1] + self.rng.uniform(-6, 6))
+                    self._set("flying")
+                else:
+                    self._set("idle")
+
+    def _set(self, state: str) -> None:
+        self.state, self.state_t = state, self.t
+
+    def _start_reel(self) -> None:
+        self.x, self.v, self.progress = 0.5, 0.0, 0.0
+        self.duration = self.rng.uniform(3.5, 6.0)
+        self.fish = (self.rng.uniform(1.0, 1.8), self.rng.uniform(0.4, 0.9),
+                     self.rng.uniform(0, 6.28), self.rng.uniform(0, 6.28))
+        self._set("reel")
+
+    # ── physics ─────────────────────────────────────────────────────────────
+
+    def advance(self) -> None:
+        with self.lock:
+            now = self.clock.now()
+            while self.t < now:
+                dt = min(0.004, now - self.t)
+                self.t += dt
+                self._step(dt)
+
+    def _step(self, dt: float) -> None:
+        t, age = self.t, self.t - self.state_t
+        for s in self.spots:
+            if s["fish"] <= 0 and t >= s["respawn"]:
+                s.update(self._new_spot())
+        if self.state == "flying" and age > 0.7:
+            self.spot_index = self._spot_at(self.bobber)
+            self.bite_at = t + self.rng.uniform(2.0, 7.0)
+            self._set("floating")
+        elif self.state == "floating" and self.spot_index is not None and t >= self.bite_at:
+            self._set("biting")
+        elif self.state == "biting" and age > 1.2:
+            self._set("idle")
+        elif self.state == "reel":
+            a1, a2, p1, p2 = self.fish
+            force = a1 * math.sin(1.7 * t + p1) + a2 * math.sin(4.3 * t + p2)
+            acc = (3.0 if self.held else -3.0) + force - 1.5 * self.v
+            self.v += acc * dt
+            self.x += self.v * dt
+            self.progress += dt
+            if self.x <= 0.0 or self.x >= 1.0:
+                self.escaped += 1
+                self._set("idle")
+            elif self.progress >= self.duration:
+                self.caught += 1
+                spot = self.spots[self.spot_index] if self.spot_index is not None else None
+                if spot:
+                    spot["fish"] -= 1
+                    if spot["fish"] <= 0:
+                        spot["respawn"] = t + 8.0
+                        spot["x"] = spot["y"] = -999
+                self._set("reward")
+        elif self.state == "reward" and age > 0.6:
+            self._set("idle")
+
+    def _spot_at(self, p) -> int | None:
+        for i, s in enumerate(self.spots):
+            if s["fish"] > 0 and (p[0] - s["x"]) ** 2 + (p[1] - s["y"]) ** 2 <= 45 ** 2:
+                return i
+        return None
+
+    # ── rendering ───────────────────────────────────────────────────────────
+
+    def render(self, r: Region) -> np.ndarray:
+        with self.lock:
+            self.advance()
+            x0, y0 = max(0, r.left), max(0, r.top)
+            x1, y1 = min(W, r.left + r.width), min(H, r.top + r.height)
+            img = np.zeros((r.height, r.width, 3), np.uint8)
+            if x1 <= x0 or y1 <= y0:
+                return img
+            view = img[y0 - r.top:y1 - r.top, x0 - r.left:x1 - r.left]
+            view[:] = self.bg[y0:y1, x0:x1]
+            k = int(self.t * 12) % len(self.noise)
+            cv2.add(view, self.noise[k][y0:y1, x0:x1], dst=view)
+            ox, oy = r.left, r.top
+            for s in self.spots:
+                if s["fish"] > 0:
+                    draw_spot(img, s["x"] - ox, s["y"] - oy, self.t)
+            age = self.t - self.state_t
+            bx, by = self.bobber[0] - ox, self.bobber[1] - oy
+            if self.state == "flying":
+                f = min(1.0, age / 0.7)
+                sx, sy = self.cursor[0] - ox, H - 160 - oy
+                cv2.circle(img, (int(sx + (bx - sx) * f), int(sy + (by - sy) * f - 120 * math.sin(math.pi * f))),
+                           5, (235, 235, 235), -1, cv2.LINE_AA)
+            elif self.state == "floating":
+                draw_bobber(img, bx, by + 2 * math.sin(self.t * 3.9))
+            elif self.state == "biting":
+                for i in range(3):
+                    rr = int(8 + 10 * ((age * 1.6 + i / 3) % 1))
+                    cv2.ellipse(img, (int(bx), int(by + 6)), (rr, rr // 3), 0, 0, 360, (225, 225, 225), 1, cv2.LINE_AA)
+            elif self.state == "reel":
+                draw_bar(img, BAR.left - ox, BAR.top - oy, self.x, self.progress / self.duration)
+            elif self.state == "reward":
+                cv2.putText(img, "+1", (int(W / 2 - ox - 14), int(H - 240 - oy - age * 60)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (99, 230, 245), 2, cv2.LINE_AA)
+            return img
+
+
+def draw_bobber(img, x: float, y: float) -> None:
+    x, y = int(round(x)), int(round(y))
+    cv2.ellipse(img, (x, y + 3), (9, 3), 0, 0, 360, (60, 40, 20), -1, cv2.LINE_AA)
+    cv2.circle(img, (x, y), 7, (20, 20, 20), -1, cv2.LINE_AA)
+    cv2.ellipse(img, (x, y), (6, 6), 0, 180, 360, (60, 60, 230), -1, cv2.LINE_AA)
+    cv2.ellipse(img, (x, y), (6, 6), 0, 0, 180, (240, 240, 240), -1, cv2.LINE_AA)
+    cv2.line(img, (x, y - 7), (x, y - 12), (20, 20, 20), 2, cv2.LINE_AA)
+
+
+def draw_spot(img, x: float, y: float, t: float) -> None:
+    for i in range(6):
+        a = i * math.pi / 3 + 0.3
+        px, py = int(x + 16 * math.cos(a)), int(y + 8 * math.sin(a))
+        cv2.circle(img, (px, py), 3, (230, 220, 200), 1, cv2.LINE_AA)
+    cv2.ellipse(img, (int(x), int(y)), (24, 11), 0, 0, 360, (200, 185, 150), 1, cv2.LINE_AA)
+    cv2.circle(img, (int(x), int(y)), 2 + int(1.5 * (1 + math.sin(t * 5))), (240, 235, 225), -1, cv2.LINE_AA)
+
+
+def draw_bar(img, x: float, y: float, pos: float, progress: float) -> None:
+    x, y = int(x), int(y)
+    cv2.rectangle(img, (x - 3, y - 3), (x + BAR.width + 2, y + BAR.height + 2), (24, 24, 26), -1)
+    cv2.rectangle(img, (x, y), (x + BAR.width - 1, y + BAR.height - 1), (58, 52, 46), -1)
+    cv2.rectangle(img, (x - 3, y - 3), (x + BAR.width + 2, y + BAR.height + 2), (190, 190, 190), 1)
+    cv2.line(img, (x, y - 8), (x + int(BAR.width * min(1.0, progress)), y - 8), (160, 231, 110), 3)
+    mx = x + MARKER_W // 2 + pos * (BAR.width - MARKER_W)
+    cy = y + BAR.height // 2
+    cv2.ellipse(img, (int(mx), cy), (MARKER_W // 2 - 1, MARKER_H // 2 - 2), 0, 0, 360, (20, 20, 20), -1, cv2.LINE_AA)
+    cv2.ellipse(img, (int(mx), cy), (MARKER_W // 2 - 3, MARKER_H // 2 - 4), 0, 0, 360, (90, 210, 245), -1, cv2.LINE_AA)
+    cv2.circle(img, (int(mx), cy - 4), 2, (20, 20, 20), -1, cv2.LINE_AA)
+
+
+class SimScreen(Screen):
+    def __init__(self, game: SimGame):
+        self.game = game
+
+    def grab(self, region: Region) -> np.ndarray:
+        return self.game.render(region)
+
+    def monitors(self) -> list[dict]:
+        mon = {"left": 0, "top": 0, "width": W, "height": H}
+        return [mon, dict(mon)]
+
+
+class SimInput(Input):
+    def __init__(self, game: SimGame):
+        super().__init__()
+        self.game = game
+        self.keys: list[str] = []
+
+    def _down(self) -> None:
+        self.game.press()
+
+    def _up(self) -> None:
+        if self.game.held:
+            self.game.release()
+
+    def move(self, x: int, y: int) -> None:
+        self.game.cursor = (int(x), int(y))
+
+    def position(self) -> tuple[int, int]:
+        return self.game.cursor
+
+    def key(self, name: str) -> None:
+        self.keys.append(name)
+
+
+def make_templates() -> dict[str, np.ndarray]:
+    """Crop sprite templates the same way a user would in the calibrator."""
+    canvas = np.zeros((120, 200, 3), np.uint8)
+    canvas[:] = (110, 82, 33)
+    bob = canvas.copy()
+    draw_bobber(bob, 100, 60)
+    spot = canvas.copy()
+    draw_spot(spot, 100, 60, 0.0)
+    bar = np.zeros((BAR.height + 40, BAR.width + 40, 3), np.uint8)
+    draw_bar(bar, 20, 20, 0.5, 0.0)
+    mx = 20 + MARKER_W // 2 + int(0.5 * (BAR.width - MARKER_W))
+    return {
+        "bobber": bob[60 - 13:60 + 9, 100 - 10:100 + 10].copy(),
+        "spot": spot[60 - 14:60 + 14, 100 - 27:100 + 27].copy(),
+        "marker": bar[20:20 + BAR.height, mx - MARKER_W // 2:mx + MARKER_W // 2].copy(),
+    }
+
+
+def demo_config() -> Config:
+    cfg = Config()
+    cfg.cast.target = "auto"
+    cfg.cast.points = [[560, 300], [1040, 300], [800, 470]]
+    cfg.regions.bobber = Region(WATER.left, WATER.top, WATER.width, WATER.height)
+    cfg.regions.water = Region(WATER.left, WATER.top, WATER.width, WATER.height)
+    cfg.regions.reel = Region(BAR.left, BAR.top, BAR.width, BAR.height)
+    cfg.system.require_focus = False
+    cfg.system.sound = False
+    cfg.system.start_delay_s = 1.0
+    cfg.bite.settle_ms = 600
+    cfg.bite.bite_timeout_s = 12
+    cfg.session.cooldown_ms = 600
+    cfg.session.cooldown_jitter_ms = 400
+    return cfg
+
+
+def prepare_profile(store: ProfileStore, name: str = "Demo") -> str:
+    if not store.exists(name):
+        store.save(name, demo_config())
+        for tpl, img in make_templates().items():
+            write_image(store.template_path(name, tpl), img)
+    return name

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Albion Fishing Bot</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230d0d0f'/%3E%3Cellipse cx='16' cy='16' rx='10' ry='6.5' transform='rotate(-28 16 16)' fill='none' stroke='%23fff' stroke-width='3'/%3E%3Ccircle cx='9.5' cy='21' r='2.6' fill='%23f1e65b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="canvas">
+    <div id="world">
+      <div class="glow g1" style="left: 820px; top: 120px"></div>
+      <div class="glow g2" style="left: 930px; top: 200px"></div>
+      <div class="glow g3" style="left: 760px; top: 260px"></div>
+      <svg id="wires">
+        <defs>
+          <linearGradient id="wire-grad" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stop-color="#ffffff" stop-opacity=".25"/>
+            <stop offset=".5" stop-color="#ffffff" stop-opacity=".9"/>
+            <stop offset="1" stop-color="#ffffff" stop-opacity=".25"/>
+          </linearGradient>
+        </defs>
+        <g id="wire-paths"></g>
+      </svg>
+      <div id="nodes"></div>
+      <div class="bot-cursor off" id="bot">
+        <svg viewBox="0 0 16 16"><path d="M1.5 1.5l5.2 13 1.9-5.4 5.4-1.9z"/></svg>
+        <span class="tag"></span>
+      </div>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <div class="cluster l">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><ellipse cx="16" cy="16" rx="11" ry="7" transform="rotate(-28 16 16)" fill="none" stroke="#fff" stroke-width="3.2"/><circle cx="8.6" cy="21.4" r="2.8" fill="#fff"/></svg>
+      </div>
+      <button class="btn menu-btn" data-menu="workflow" data-t="menu.workflow"></button>
+      <button class="btn menu-btn" data-action="calibrate" data-t="menu.calibrate"></button>
+      <button class="btn menu-btn" data-menu="help" data-t="menu.help"></button>
+    </div>
+    <div class="tabs">
+      <button class="btn icon" id="prev-profile" data-tip="tip.prev"><i data-i="chevL"></i></button>
+      <button class="btn profile-tab" id="profile-tab"><span id="profile-name"></span><i class="x" data-i="chevD"></i></button>
+      <button class="btn icon" id="next-profile" data-tip="tip.next"><i data-i="chevR"></i></button>
+    </div>
+    <div class="cluster r">
+      <button class="btn icon" data-menu="more" data-tip="tip.more"><i data-i="more"></i></button>
+      <button class="btn" id="run"><i data-i="play"></i><span class="lbl"></span><kbd id="kbd-toggle">F8</kbd></button>
+      <button class="btn icon" id="stop" data-tip="tip.stop"><i data-i="x"></i></button>
+      <button class="btn icon" id="reset-stats" data-tip="tip.reset_stats"><i data-i="refresh"></i></button>
+      <button class="btn icon" id="toggle-dock" data-tip="tip.dock"><i data-i="menu"></i></button>
+    </div>
+  </header>
+
+  <div class="subbar">
+    <div class="cluster l">
+      <div class="status-chip">
+        <div class="eq"><span></span><span></span><span></span></div>
+        <span class="stage" id="stage"></span><span class="remain" id="remain"></span>
+        <span class="count" id="count">0</span>
+      </div>
+    </div>
+    <div class="subtitle"><span data-t="subtitle"></span> v<span id="version"></span><span class="demo" id="demo-tag" data-t="demo" hidden></span></div>
+    <div class="cluster r">
+      <button class="btn primary" data-action="calibrate"><i data-i="camera"></i><span data-t="btn.calibrate"></span></button>
+      <button class="btn" data-action="check"><i data-i="checkCircle"></i><span data-t="btn.check"></span></button>
+    </div>
+  </div>
+
+  <aside class="zoombar">
+    <button class="btn icon" data-zoom="in" data-tip="tip.zoom_in"><i data-i="plus"></i></button>
+    <button class="btn icon" data-zoom="out" data-tip="tip.zoom_out"><i data-i="minus"></i></button>
+    <button class="btn icon" data-zoom="fit" data-tip="tip.fit"><i data-i="fit"></i></button>
+    <button class="btn icon on" data-zoom="wires" data-tip="tip.wires"><i data-i="eye"></i></button>
+    <button class="btn icon" data-zoom="layout" data-tip="tip.layout"><i data-i="layout"></i></button>
+  </aside>
+
+  <div class="corner l" id="corner-l"></div>
+  <div class="corner r" id="corner-r"></div>
+
+  <footer class="dock">
+    <div class="logcard" id="logcard">
+      <div class="k" data-t="tab.log"></div>
+      <div class="line prev" id="log-prev"></div>
+      <div class="line" id="log-last"></div>
+    </div>
+    <div class="dock-tabs">
+      <button class="tb" data-panel="log" data-tip="tab.log"><i data-i="history"></i></button>
+      <button class="tb" data-panel="session" data-tip="node.session"><i data-i="calendar"></i></button>
+      <button class="tb" data-panel="stats" data-tip="tab.stats"><i data-i="chart"></i></button>
+      <button class="tb" data-panel="templates" data-tip="tab.templates"><i data-i="cube"></i></button>
+      <button class="tb" data-panel="profiles" data-tip="tab.profiles"><i data-i="folder"></i></button>
+      <span class="grow"></span>
+      <span class="vr"></span>
+      <button class="tb lang" id="lang"></button>
+      <button class="tb" data-panel="settings" data-tip="tab.settings"><i data-i="gear"></i></button>
+    </div>
+  </footer>
+
+  <div class="panel" id="panel"></div>
+  <div class="toasts" id="toasts"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

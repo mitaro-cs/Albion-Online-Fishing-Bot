@@ -519,3 +519,9 @@ body.dock-min #world { bottom: 60px; }
 .update-chip.ready { border-color: color-mix(in srgb, var(--green) 45%, transparent); color: var(--text); cursor: pointer; }
 .update-chip.ready i { background: var(--green); box-shadow: 0 0 8px var(--green); }
 .update-chip.ready:hover { background: var(--hover); }
+
+.gone { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; gap: 6px; text-align: center; color: var(--text-2); }
+.gone .logo { width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center; background: rgba(95, 227, 155, .12); color: var(--green); margin-bottom: 8px; }
+.gone .logo svg { width: 26px; height: 26px; stroke-width: 2.2; }
+.gone h2 { margin: 0; font-weight: 500; color: var(--text); }
+.gone p { margin: 0; color: var(--text-3); }

@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--data", default=str(default_data_dir()), help="data directory (profiles, templates)")
     ap.add_argument("--port", type=int, default=0, help="UI server port (default: random free port)")
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--uninstall", action="store_true", help="delete the data folder (and the exe) and exit")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
 
@@ -37,6 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
     enable_dpi_awareness()
+    if args.uninstall:
+        from .uninstall import run
+        logging.shutdown()
+        print(run(Path(args.data)))
+        return 0
 
     from .api import Api
     from .config import ProfileStore
@@ -61,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         httpd, url = serve(api, args.port)
         try:
             from .gui import run_window
-            if args.browser or not run_window(api, url, args.debug):
+            if args.browser or not run_window(api, url, args.debug, str(Path(args.data).resolve() / "webview")):
                 webbrowser.open(url)
                 print(f"UI: {url}\nPress Ctrl+C to quit.")
                 while not api.quit.wait(1):

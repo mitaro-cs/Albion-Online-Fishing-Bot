@@ -8,7 +8,7 @@ from .api import Api
 log = logging.getLogger(__name__)
 
 
-def run_window(api: Api, url: str, debug: bool = False) -> bool:
+def run_window(api: Api, url: str, debug: bool = False, storage: str | None = None) -> bool:
     """Blocks until the window closes. Returns False if no native webview is available."""
     try:
         import webview
@@ -20,7 +20,8 @@ def run_window(api: Api, url: str, debug: bool = False) -> bool:
             "Albion Fishing Bot", url, width=1440, height=900, min_size=(1024, 680),
             background_color="#0c0c0e", text_select=False)
         api.attach_window(window)
-        webview.start(debug=debug)
+        # keep the WebView2 cache inside data/ so uninstall leaves nothing behind
+        webview.start(debug=debug, private_mode=True, storage_path=storage)
         return True
     except Exception:
         log.exception("native window failed — falling back to the browser")

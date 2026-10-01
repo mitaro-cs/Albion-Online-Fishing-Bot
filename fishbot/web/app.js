@@ -89,6 +89,7 @@ const TOKEN = new URLSearchParams(location.search).get('token') || '';
 let failures = 0;
 
 async function call(method, ...args) {
+  if (S.gone) return { ok: false, error: 'gone' };
   try {
     const res = await fetch(`/api/${method}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Token': TOKEN },
@@ -607,6 +608,7 @@ function drawWires() {
   cancelAnimationFrame(wireFrame);
   wireFrame = requestAnimationFrame(() => {
     const g = $('#wire-paths');
+    if (!g) return;
     const active = new Set(STAGE[S.snap?.stage]?.wires || []);
     g.replaceChildren(...WIRES.map(([a, b], i) => {
       const p = portCenter(a), q = portCenter(b);
@@ -651,6 +653,7 @@ function stageLabel(snap) {
 }
 
 function applySnap(snap) {
+  if (S.gone) return;
   const prevStage = S.snap?.stage, prevStatus = S.snap?.status;
   S.snap = snap;
   if (snap.logs.length) {
@@ -694,6 +697,7 @@ function updateStage() {
 
 function updateCursor() {
   const bot = $('#bot');
+  if (!bot) return;
   const snap = S.snap;
   const info = snap && snap.status === 'running' ? STAGE[snap.stage] : null;
   const el = info && $(`.node[data-node="${info.node}"]`);
@@ -841,12 +845,25 @@ function renderPanel() {
         h('div', { class: 'row check' }, h('label', {}, t('f.system.sound')), toggle('system.sound')),
         h('div', { class: 'row check' }, h('label', {}, t('f.system.auto_update')), toggle('system.auto_update'))),
       h('div', { class: 'sep' }),
-      h('div', { class: 'note' }, S.boot.data_dir));
+      h('div', { class: 'row check' }, h('div', { class: 'note' }, S.boot.data_dir),
+        h('button', { class: 'btn sm danger', onclick: uninstallApp }, ic('trash'), t('uninstall.btn'))));
   }
   S.panelBinds = scope;
   scope = null;
   panel.replaceChildren(...kids);
   if (S.panel === 'log') panel.scrollTop = panel.scrollHeight;
+}
+
+async function uninstallApp() {
+  const ok = await dialog('uninstall.title', h('div', {},
+    h('p', {}, t('uninstall.text')),
+    h('div', { class: 'note' }, S.boot.data_dir)), [['btn.cancel', false], ['uninstall.confirm', true, true]]);
+  if (!ok) return;
+  const r = await act('uninstall');
+  if (!r.ok) return;
+  S.gone = true;
+  document.body.replaceChildren(h('div', { class: 'gone' },
+    h('div', { class: 'logo' }, ic('check')), h('h2', {}, t('uninstall.done')), h('p', {}, t('uninstall.done2'))));
 }
 
 async function resetSection(section) {

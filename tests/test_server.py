@@ -104,3 +104,14 @@ def test_profiles(server):
     assert r["profile"] == "River"
     r = post(base, "profile_delete", token=token)
     assert r["ok"] and "River" not in r["profiles"]
+
+
+def test_uninstall_removes_data_and_blocks_writes(server):
+    api, base, token = server
+    root = api._store.root
+    assert root.exists()
+    r = post(base, "uninstall", token=token)
+    assert r["ok"] and not r["scheduled"]
+    assert not root.exists()
+    assert not post(base, "save_ui", {"lang": "ru"}, token=token)["ok"]
+    assert not root.exists()

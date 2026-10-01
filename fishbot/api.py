@@ -33,6 +33,8 @@ def endpoint(fn):
 
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
+        if getattr(self, "_gone", False):  # uninstalled: never recreate files
+            return {"ok": False, "error": "offline"}
         try:
             out = fn(self, *args, **kwargs)
             return {"ok": True, **(out or {})}
@@ -275,6 +277,26 @@ class Api:
                 win.destroy()
             self.quit.set()
         threading.Thread(target=close, daemon=True).start()
+
+    @endpoint
+    def uninstall(self):
+        """Remove data/ (and the exe when frozen), then close the app."""
+        from .uninstall import run
+        self._halt()
+        self._updater.restart = False
+        self._updater.state["status"] = "off"  # don't swap in a pending update afterwards
+        self._hotkeys.stop()
+        logging.shutdown()
+        result = run(self._store.root)
+        self._gone = True
+
+        def close():
+            time.sleep(0.4)
+            if self._window is not None:
+                self._window.destroy()
+            self.quit.set()
+        threading.Thread(target=close, daemon=True).start()
+        return result
 
     @endpoint
     def reset_stats(self):

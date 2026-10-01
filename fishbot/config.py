@@ -127,10 +127,12 @@ class SystemCfg:
     require_focus: bool = True
     failsafe: bool = True
     sound: bool = True
+    auto_update: bool = True
     start_delay_s: float = num(3.0, 0, 30, 0.5, "s")
     idle_fps: int = num(30, 5, 120, 5, "fps")
     hotkey_toggle: str = "f8"
     hotkey_stop: str = "f9"
+    hotkey_mark: str = "f7"
 
 
 @dataclass

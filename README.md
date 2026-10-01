@@ -68,7 +68,7 @@
 <td valign="top">
 
 **● Интерфейс**<br>
-<sub>Нодовый канвас с живым «зрением» бота, калибратор с зумом, профили под разные места, RU / EN, горячие клавиши F8 / F9.</sub>
+<sub>Фиксированная нодовая панель на весь экран с живым «зрением» бота, настройка в один клик <kbd>F7</kbd>, профили, RU / EN, автообновление из GitHub.</sub>
 
 </td>
 </tr>
@@ -76,7 +76,7 @@
 
 ## ◦ Быстрый старт
 
-**Проще всего:** скачай `AlbionFishingBot.exe` из [Releases](https://github.com/mitaro-cs/Albion-Online-Fishing-Bot/releases/latest), положи в отдельную папку и запусти — Python не нужен. Профили сохраняются рядом, в `data/`. Без игры: `AlbionFishingBot.exe --demo`.
+**Проще всего:** скачай `AlbionFishingBot.exe` из [Releases](https://github.com/mitaro-cs/Albion-Online-Fishing-Bot/releases/latest), положи в отдельную папку и запусти — Python не нужен. Профили сохраняются рядом, в `data/`. Без игры: `AlbionFishingBot.exe --demo`. Новые версии бот скачивает и ставит сам (проверка sha256; отключается в настройках).
 
 **Из исходников:** Windows 10/11, [Python 3.10+](https://www.python.org/downloads/) (галочка *Add python.exe to PATH*), игра в режиме «Окно» или «Без рамки».
 
@@ -106,19 +106,38 @@ python -m fishbot
 
 ## ◦ Калибровка
 
-Бот не знает, как выглядит твой экран, пока ты ему не покажешь. Делается один раз на профиль, ~2 минуты.
+Без скриншотов: рыбачишь как обычно, наводишь мышь и жмёшь <kbd>F7</kbd> прямо в игре. Один раз на профиль, ~1 минута.
 
-1. **Встань у воды** с удочкой. Забрось вручную, дождись, пока поплавок ляжет на воду.
-2. **Калибровка → Снимок.** Окно бота само скроется на время снимка (в браузере — выберите задержку 3 с и переключитесь в игру).
-3. Инструмент **«Зона поплавка»** — выдели воду, куда падает поплавок. Инструмент **«Поплавок»** — плотно обведи сам поплавок.
-4. Подсеки рыбу вручную и сделай **снимок во время мини-игры**: **«Шкала»** — выдели дорожку шкалы точно от края до края, **«Маркер»** — обведи маркер на ней.
-5. Выбери цель заброса в ноде **«Заброс»**: курсор, точки (**«Точка заброса»** — клик по воде) или авто-поиск (**«Зона воды»** + **«Косяк»**).
+<table>
+<tr>
+<td width="52%" valign="top">
 
-Нажми **Проверка** — она покажет, чего не хватает. Кнопки **Тест** на нодах проверяют детекцию на живом экране и показывают совпадение в ноде «Зрение».
+1. Нажми **Калибровка** — откроется «Быстрая настройка».
+2. **Поплавок.** Забрось, дождись, пока поплавок ляжет, наведи на него → <kbd>F7</kbd>. Бот сам вырежет поплавок и задаст зону поиска.
+3. **Левый край шкалы.** Подсеки рыбу; во время мини-игры наведи на левый край шкалы → <kbd>F7</kbd>.
+4. **Правый край шкалы.** Наведи на правый край → <kbd>F7</kbd>. Маркер бот найдёт сам — по движению.
+5. Готово — жми <kbd>F8</kbd> в игре.
 
-<p align="center">
-  <img src="docs/assets/calibration-ru.jpg" alt="Калибратор" width="100%">
-</p>
+Цель заброса по умолчанию — **курсор**: перед стартом наведи мышь на воду. Точки или авто-поиск косяков включаются в ноде **«Заброс»**.
+
+</td>
+<td width="48%" valign="top">
+<img src="docs/assets/setup-ru.png" alt="Быстрая настройка" width="100%">
+</td>
+</tr>
+</table>
+
+**Проверка** покажет, чего не хватает, а кнопки **Тест** на нодах проверяют детекцию на живом экране. Если шаг не получился, бот подскажет, что сделать, и просто ждёт повторного <kbd>F7</kbd>.
+
+<details>
+<summary>Ручная калибровка по снимку (для тонкой настройки)</summary>
+
+<br>
+
+«Быстрая настройка» → **Ручная калибровка** → **Снимок**, затем выделить мышью зоны и шаблоны. Здесь же задаются точки заброса и зона воды + шаблон косяка для авто-поиска.
+
+<img src="docs/assets/calibration-ru.jpg" alt="Калибратор" width="100%">
+</details>
 
 ## ◦ Как это работает
 
@@ -165,6 +184,7 @@ python -m fishbot
 |---|---|
 | <kbd>F8</kbd> | Старт / пауза / продолжить (работает, когда игра в фокусе) |
 | <kbd>F9</kbd> | Стоп и отпустить мышь |
+| <kbd>F7</kbd> | Отметка шага в «Быстрой настройке» |
 | ↖ угол экрана | Аварийная остановка |
 
 Клавиши переназначаются в **Настройках** (шестерёнка в доке).
@@ -244,7 +264,7 @@ Screen-vision fishing bot for Albion Online with a predictive reel controller an
 
 **Quick start** (Windows 10/11, Python 3.10+): `git clone …`, then `run.bat`. Try it without the game: `run.bat --demo`.
 
-**Calibrate once per spot:** cast manually → *Calibrate → Capture* → select the *Bobber area* and the *Bobber*; capture during the minigame → select the *Reel bar* track and the *Marker*; choose the cast target (cursor, fixed points or automatic fishing-spot search). *Check setup* lists anything missing, *Test* buttons run detection on the live screen.
+**Calibrate in the game, no screenshots:** *Calibrate* opens Quick setup — point at the bobber → <kbd>F7</kbd>; during the minigame point at the left end of the bar → <kbd>F7</kbd>, then the right end → <kbd>F7</kbd> (the marker is found by its motion). Manual screenshot calibration is still available for fine-tuning. *Check setup* lists anything missing, *Test* buttons run detection on the live screen.
 
 **Hotkeys:** <kbd>F8</kbd> start / pause, <kbd>F9</kbd> stop, mouse to the top-left corner — emergency stop. The bot pauses automatically when the game loses focus and always releases the mouse button on exit.
 

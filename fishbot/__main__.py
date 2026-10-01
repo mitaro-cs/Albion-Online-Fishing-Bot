@@ -64,8 +64,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.browser or not run_window(api, url, args.debug):
                 webbrowser.open(url)
                 print(f"UI: {url}\nPress Ctrl+C to quit.")
-                while True:
-                    time.sleep(1)
+                while not api.quit.wait(1):
+                    pass
         finally:
             httpd.shutdown()
     except KeyboardInterrupt:

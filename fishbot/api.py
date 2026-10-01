@@ -18,6 +18,8 @@ from .config import TEMPLATES, Config, ProfileStore, Region, schema, write_image
 from .controls import Input
 from .engine import Engine
 from .hotkeys import Hotkeys
+from .updater import Updater
+from .setup import STEPS, SetupError, find_bobber, find_marker
 from .system import foreground_title, open_path
 from .vision import VisionError, to_data_url
 
@@ -56,9 +58,14 @@ class Api:
         name = profile or settings.get("profile")
         self._profile = name if name and store.exists(name) else store.list()[0]
         self._hotkeys = Hotkeys()
+        self._setup = {"active": False, "done": False, "step": 0, "error": "", "busy": False, "left": None, "rev": 0}
+        self._mark_lock = threading.Lock()
         if hotkeys:
             self._hotkeys.start()
         self._load()
+        self.quit = threading.Event()
+        self._updater = Updater(self._cfg.system.auto_update)
+        self._updater.start()
 
     # ── internals ───────────────────────────────────────────────────────────
 
@@ -74,17 +81,63 @@ class Api:
         self._engine.join(2)
         self._engine.inp.release()
         self._hotkeys.stop()
+        self._updater.finish()
 
     def _load(self) -> None:
         with self._lock:
             self._cfg = self._store.load(self._profile)
             self._templates = self._store.templates(self._profile)
             self._engine.configure(self._cfg, self._templates)
-            s = self._cfg.system
-            self._hotkeys.bind({s.hotkey_toggle: self._hotkey_toggle, s.hotkey_stop: self._engine.stop})
+            self._bind_hotkeys()
             settings = self._store.settings()
             settings["profile"] = self._profile
             self._store.save_settings(settings)
+
+    def _bind_hotkeys(self) -> None:
+        s = self._cfg.system
+        self._hotkeys.bind({s.hotkey_toggle: self._hotkey_toggle, s.hotkey_stop: self._engine.stop,
+                            s.hotkey_mark: self._hotkey_mark})
+
+    def _hotkey_mark(self) -> None:
+        if self._setup["active"]:
+            threading.Thread(target=self._mark, name="fishbot-setup", daemon=True).start()
+
+    def _mark(self) -> None:
+        """One quick-setup step, using the current cursor position."""
+        if not self._mark_lock.acquire(blocking=False):
+            return
+        st = self._setup
+        try:
+            st["busy"], st["error"] = True, ""
+            x, y = self._engine.inp.position()
+            step = STEPS[st["step"]]
+            if step == "bobber":
+                tpl, region = find_bobber(self._screen, x, y)
+                self._save_setup("bobber", tpl, {"regions": {"bobber": asdict(region)}, "bite": {"method": "template"}})
+            elif step == "bar_left":
+                st["left"] = (x, y)
+            else:
+                lx, ly = st["left"]
+                tpl, region = find_marker(self._screen, lx, x, (ly + y) // 2)
+                self._save_setup("marker", tpl, {"regions": {"reel": asdict(region)}, "reel": {"method": "template"}})
+            st["step"] += 1
+            if st["step"] >= len(STEPS):
+                st["active"], st["done"] = False, True
+        except SetupError as e:
+            st["error"] = e.code
+        except Exception as e:  # never kill the hotkey thread
+            log.exception("quick setup step failed")
+            st["error"] = f"internal: {e}"
+        finally:
+            st["busy"] = False
+            st["rev"] += 1
+            self._mark_lock.release()
+
+    def _save_setup(self, name: str, tpl, patch: dict) -> None:
+        with self._lock:
+            write_image(self._store.template_path(self._profile, name), tpl)
+            self._templates = self._store.templates(self._profile)
+            self._commit(self._cfg.merged(patch))
 
     def _hotkey_toggle(self) -> None:
         try:
@@ -97,8 +150,7 @@ class Api:
             self._cfg = cfg
             self._store.save(self._profile, cfg)
             self._engine.configure(cfg, self._templates)
-            s = cfg.system
-            self._hotkeys.bind({s.hotkey_toggle: self._hotkey_toggle, s.hotkey_stop: self._engine.stop})
+            self._bind_hotkeys()
 
     def _thumbs(self) -> dict:
         return {t: (to_data_url(self._templates[t], 240) if t in self._templates else None) for t in TEMPLATES}
@@ -177,6 +229,52 @@ class Api:
     @endpoint
     def stop(self):
         self._engine.stop()
+
+    @endpoint
+    def setup_start(self):
+        self._halt()
+        self._setup.update(active=True, done=False, step=0, error="", left=None)
+        self._setup["rev"] += 1
+        return self._setup_view()
+
+    @endpoint
+    def setup_cancel(self):
+        self._setup.update(active=False, error="")
+        self._setup["rev"] += 1
+
+    @endpoint
+    def setup_state(self):
+        return self._setup_view()
+
+    @endpoint
+    def setup_mark(self):
+        """Run the current step at the cursor (same as pressing the hotkey)."""
+        self._mark()
+        return self._setup_view()
+
+    def _setup_view(self) -> dict:
+        st = {k: v for k, v in self._setup.items() if k != "left"}
+        return {"setup": {**st, "key": self._cfg.system.hotkey_mark.upper(), "hotkeys": self._hotkeys.ok},
+                "config": self._cfg.to_dict(), "templates": self._thumbs()}
+
+    @endpoint
+    def update_state(self):
+        return {"update": dict(self._updater.state)}
+
+    @endpoint
+    def update_install(self):
+        """Close now; the downloaded version replaces the exe and starts again."""
+        if not self._updater.ready:
+            raise ValueError("no update downloaded")
+        self._updater.restart = True
+
+        def close():
+            time.sleep(0.3)
+            win = self._window
+            if win is not None:
+                win.destroy()
+            self.quit.set()
+        threading.Thread(target=close, daemon=True).start()
 
     @endpoint
     def reset_stats(self):

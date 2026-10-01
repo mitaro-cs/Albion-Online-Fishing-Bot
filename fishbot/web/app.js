@@ -121,7 +121,7 @@ async function act(method, ...args) {
 
 const S = {
   boot: null, cfg: null, schema: null, templates: {}, snap: null, logs: [], lastLog: 0,
-  zoom: 1, pan: [0, 0], layout: {}, wires: true, dock: true, panel: null,
+  dock: true, panel: null,
   preview: { test: null, live: true },
 };
 
@@ -389,7 +389,7 @@ function nodeShell(id, body) {
   const pill = def.test && h('button', { class: `pill${def.test === 'reel' ? ' blue' : ''}`, type: 'button', onclick: () => probe(def.test) },
     ic('spark'), t('btn.test'));
   const head = def.title && h('div', { class: 'node-head' }, h('span', { class: 'dot' }), h('span', { class: 'title' }, t(def.title)), pill);
-  return h('section', { class: `node${def.bare ? ' bare' : ''}`, 'data-node': id, style: `width:${def.w}px; --c: var(--${def.c})` },
+  return h('section', { class: `node${def.bare ? ' bare' : ''}`, 'data-node': id, style: `--c: var(--${def.c})` },
     head, body);
 }
 
@@ -574,64 +574,33 @@ function buildPreview() {
 function renderNodes() {
   binders.clear();
   const root = $('#nodes');
-  root.replaceChildren(buildCast(), buildBobber(), buildTrigger(), buildReel(), buildPreview());
-  for (const el of $$('.node', root)) {
-    placeNode(el);
-    new ResizeObserver(() => drawWires()).observe(el);
-    const handle = $('.node-head', el) || $('.card-head', el);
-    if (handle) dragNode(el, handle);
-  }
+  // fixed grid: Cast | Bite + Trigger | Reel | Live vision
+  root.replaceChildren(
+    h('div', { class: 'col' }, buildCast()),
+    h('div', { class: 'col' }, buildBobber(), buildTrigger()),
+    h('div', { class: 'col' }, buildReel()),
+    h('div', { class: 'col stretch' }, buildPreview()));
+  for (const el of $$('.node', root)) new ResizeObserver(() => { drawWires(); updateCursor(); }).observe(el);
   drawWires();
   updateStage();
 }
 
-function nodePos(id) {
-  const saved = S.layout[id];
-  return saved ? { x: saved[0], y: saved[1] } : { x: NODES[id].x, y: NODES[id].y };
+function nodeBox(el) {
+  const r = el.getBoundingClientRect();
+  const w = $('#world');
+  const wr = w.getBoundingClientRect();
+  return { x: r.left - wr.left + w.scrollLeft, y: r.top - wr.top + w.scrollTop, w: r.width, h: r.height };
 }
 
-function placeNode(el) {
-  const p = nodePos(el.dataset.node);
-  el.style.left = `${p.x}px`;
-  el.style.top = `${p.y}px`;
-}
-
-function dragNode(el, handle) {
-  handle.addEventListener('pointerdown', e => {
-    if (e.button !== 0 || e.target.closest('button, input, select')) return;
-    e.preventDefault();
-    const id = el.dataset.node;
-    const start = nodePos(id);
-    const [sx, sy] = [e.clientX, e.clientY];
-    el.classList.add('dragging');
-    handle.setPointerCapture(e.pointerId);
-    const move = ev => {
-      S.layout[id] = [Math.round(start.x + (ev.clientX - sx) / S.zoom), Math.round(start.y + (ev.clientY - sy) / S.zoom)];
-      placeNode(el);
-      drawWires();
-      updateCursor();
-    };
-    const up = () => {
-      el.classList.remove('dragging');
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-      saveUi();
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-  });
-}
-
-// ── wires & canvas ──────────────────────────────────────────────────────────
+// ── wires ───────────────────────────────────────────────────────────────────
 
 let wireFrame = 0;
 
 function portCenter(id) {
   const el = $(`[data-port="${id}"]`);
   if (!el || !el.offsetParent) return null;
-  const r = el.getBoundingClientRect();
-  const w = $('#world').getBoundingClientRect();
-  return [(r.left + r.width / 2 - w.left) / S.zoom, (r.top + r.height / 2 - w.top) / S.zoom];
+  const b = nodeBox(el);
+  return [b.x + b.w / 2, b.y + b.h / 2];
 }
 
 function drawWires() {
@@ -642,7 +611,7 @@ function drawWires() {
     g.replaceChildren(...WIRES.map(([a, b], i) => {
       const p = portCenter(a), q = portCenter(b);
       if (!p || !q) return document.createComment('');
-      const dx = Math.max(40, Math.abs(q[0] - p[0]) * 0.5);
+      const dx = Math.max(30, Math.abs(q[0] - p[0]) * 0.5);
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       path.setAttribute('d', `M${p[0]},${p[1]} C${p[0] + dx},${p[1]} ${q[0] - dx},${q[1]} ${q[0]},${q[1]}`);
       if (active.has(i) && S.snap?.status === 'running') path.classList.add('flow');
@@ -651,90 +620,15 @@ function drawWires() {
   });
 }
 
-function applyView() {
-  const [x, y] = S.pan;
-  $('#world').style.transform = `translate(${x}px, ${y}px) scale(${S.zoom})`;
-  const c = $('#canvas');
-  c.style.backgroundSize = `${24 * S.zoom}px ${24 * S.zoom}px`;
-  c.style.backgroundPosition = `${x}px ${y}px`;
-}
-
-function zoomAt(factor, cx = innerWidth / 2, cy = innerHeight / 2) {
-  const z = clamp(S.zoom * factor, 0.4, 1.6);
-  const k = z / S.zoom;
-  S.pan = [cx - (cx - S.pan[0]) * k, cy - (cy - S.pan[1]) * k];
-  S.zoom = z;
-  applyView();
-  saveUi();
-}
-
-function fit() {
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const el of $$('.node')) {
-    const p = nodePos(el.dataset.node);
-    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y - 36);
-    x1 = Math.max(x1, p.x + el.offsetWidth); y1 = Math.max(y1, p.y + el.offsetHeight);
-  }
-  const top = 118, bottom = 150, side = 76;
-  const z = clamp(Math.min((innerWidth - side * 2) / (x1 - x0), (innerHeight - top - bottom) / (y1 - y0)), 0.4, 1);
-  S.zoom = z;
-  S.pan = [(innerWidth - (x1 - x0) * z) / 2 - x0 * z, top + (innerHeight - top - bottom - (y1 - y0) * z) / 2 - y0 * z];
-  applyView();
-  saveUi();
-}
-
 function initCanvas() {
-  const canvas = $('#canvas');
-  canvas.addEventListener('pointerdown', e => {
-    if (e.target.closest('.node')) return;
-    const [sx, sy] = [e.clientX, e.clientY];
-    const [px, py] = S.pan;
-    canvas.classList.add('panning');
-    canvas.setPointerCapture(e.pointerId);
-    const move = ev => { S.pan = [px + ev.clientX - sx, py + ev.clientY - sy]; applyView(); };
-    const up = () => {
-      canvas.classList.remove('panning');
-      canvas.removeEventListener('pointermove', move);
-      canvas.removeEventListener('pointerup', up);
-      saveUi();
-    };
-    canvas.addEventListener('pointermove', move);
-    canvas.addEventListener('pointerup', up);
-  });
-  canvas.addEventListener('wheel', e => {
-    if (e.target.closest('select, .panel')) return;
-    e.preventDefault();
-    zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
-  }, { passive: false });
-  $$('[data-zoom]').forEach(b => b.addEventListener('click', () => {
-    const z = b.dataset.zoom;
-    if (z === 'in') zoomAt(1.15);
-    else if (z === 'out') zoomAt(1 / 1.15);
-    else if (z === 'fit') fit();
-    else if (z === 'wires') {
-      S.wires = !S.wires;
-      document.body.classList.toggle('no-wires', !S.wires);
-      b.classList.toggle('on', S.wires);
-      saveUi();
-    } else if (z === 'layout') resetLayout();
-  }));
-  addEventListener('resize', () => drawWires());
-}
-
-function resetLayout() {
-  S.layout = {};
-  $$('.node').forEach(placeNode);
-  fit();
-  drawWires();
+  addEventListener('resize', () => { drawWires(); updateCursor(); });
 }
 
 let uiTimer = 0;
 
 function saveUi() {
   clearTimeout(uiTimer);
-  uiTimer = setTimeout(() => call('save_ui', {
-    lang, layout: S.layout, zoom: +S.zoom.toFixed(3), pan: S.pan.map(Math.round), wires: S.wires, dock: S.dock,
-  }), 600);
+  uiTimer = setTimeout(() => call('save_ui', { lang, dock: S.dock }), 600);
 }
 
 // ── live state ──────────────────────────────────────────────────────────────
@@ -804,10 +698,10 @@ function updateCursor() {
   const info = snap && snap.status === 'running' ? STAGE[snap.stage] : null;
   const el = info && $(`.node[data-node="${info.node}"]`);
   if (!el) { bot.classList.add('off'); return; }
-  const p = nodePos(info.node);
+  const b = nodeBox(el);
   bot.classList.remove('off');
   bot.style.setProperty('--c', `var(--${NODE_COLOR[info.node]})`);
-  bot.style.transform = `translate(${p.x + el.offsetWidth * 0.6}px, ${p.y + el.offsetHeight - 26}px)`;
+  bot.style.transform = `translate(${b.x + b.w * 0.58}px, ${b.y + b.h - 50}px)`;
   bot.querySelector('.tag').textContent = stageLabel(snap);
 }
 
@@ -937,13 +831,15 @@ function renderPanel() {
       h('div', { class: 'settings-grid' },
         row('f.system.hotkey_toggle', keyInput('system.hotkey_toggle')),
         row('f.system.hotkey_stop', keyInput('system.hotkey_stop')),
+        row('f.system.hotkey_mark', keyInput('system.hotkey_mark')),
         row('f.system.start_delay_s', stepper('system.start_delay_s')),
         row('f.system.idle_fps', stepper('system.idle_fps')),
         row('f.system.window_title', textInput('system.window_title')),
         row('f.system.monitor', mon),
         h('div', { class: 'row check' }, h('label', {}, t('f.system.require_focus')), toggle('system.require_focus')),
         h('div', { class: 'row check' }, h('label', {}, t('f.system.failsafe')), toggle('system.failsafe')),
-        h('div', { class: 'row check' }, h('label', {}, t('f.system.sound')), toggle('system.sound'))),
+        h('div', { class: 'row check' }, h('label', {}, t('f.system.sound')), toggle('system.sound')),
+        h('div', { class: 'row check' }, h('label', {}, t('f.system.auto_update')), toggle('system.auto_update'))),
       h('div', { class: 'sep' }),
       h('div', { class: 'note' }, S.boot.data_dir));
   }
@@ -1009,7 +905,6 @@ const MENUS = {
   more: () => [
     { icon: 'checkCircle', label: 'btn.check', fn: showCheck },
     { icon: 'refresh', label: 'wf.reset_stats', fn: () => act('reset_stats') },
-    { icon: 'layout', label: 'wf.layout', fn: resetLayout },
     { icon: 'folder', label: 'wf.folder', fn: () => act('open_folder') },
   ],
 };
@@ -1044,7 +939,7 @@ async function ask(titleKey, value = '') {
 function showGuide() {
   const keys = { toggle: S.cfg.system.hotkey_toggle.toUpperCase(), stop: S.cfg.system.hotkey_stop.toUpperCase() };
   dialog('guide.title', h('div', { class: 'guide' }, h('ol', {}, [1, 2, 3, 4, 5].map(i => h('li', {}, t(`guide.${i}`, keys))))),
-    [['btn.calibrate', () => openCalibrator()], ['btn.ok', true, true]], true);
+    [['btn.calibrate', () => openSetup()], ['btn.ok', true, true]], true);
 }
 
 function showHotkeys() {
@@ -1080,7 +975,7 @@ async function showCheck() {
       h('span', { class: 's' }, ic(good ? 'check' : 'x')), h('span', { class: 'grow' }, t(k)), h('span', { class: 'd' }, d)))),
     ready ? h('div', { class: 'ready' }, t('check.ready', { key: c.system.hotkey_toggle.toUpperCase() }))
       : !server.ok && server.error !== 'offline' && h('div', { class: 'note', style: 'margin-top:12px; color: var(--red)' }, errText(server)));
-  dialog('check.title', body, ready ? [['btn.ok', true, true]] : [['btn.ok', true], ['btn.calibrate', () => openCalibrator(), true]], true);
+  dialog('check.title', body, ready ? [['btn.ok', true, true]] : [['btn.ok', true], ['btn.calibrate', () => openSetup(), true]], true);
 }
 
 function openViewer() {
@@ -1135,6 +1030,104 @@ function cycleProfile(dir) {
   const list = S.boot.profiles;
   const i = list.indexOf(S.boot.profile);
   switchProfile(list[(i + dir + list.length) % list.length]);
+}
+
+// ── self-update ─────────────────────────────────────────────────────────────
+
+async function updateLoop() {
+  const r = await call('update_state');
+  const u = r.ok ? r.update : null;
+  const chip = $('#update-chip');
+  if (u && (u.status === 'downloading' || u.status === 'ready')) {
+    chip.hidden = false;
+    chip.classList.toggle('ready', u.status === 'ready');
+    chip.replaceChildren(h('i'), u.status === 'ready'
+      ? t('update.ready', { v: u.latest })
+      : t('update.downloading', { v: u.latest, p: Math.round(u.progress * 100) }));
+    chip.onclick = u.status === 'ready' ? async () => {
+      const ok = await dialog('update.title', h('p', {}, t('update.confirm', { v: u.latest })),
+        [['btn.cancel', false], ['update.now', true, true]]);
+      if (ok && (await act('update_install')).ok) toast(t('update.restarting'));
+    } : null;
+  }
+  if (!u || ['idle', 'checking', 'downloading'].includes(u.status)) setTimeout(updateLoop, 2000);
+}
+
+// ── quick setup (hover + hotkey in the game) ────────────────────────────────
+
+const SETUP_STEPS = [
+  { id: 'bobber', c: 'green', tpl: 'bobber' },
+  { id: 'bar_left', c: 'blue' },
+  { id: 'bar_right', c: 'blue', tpl: 'marker' },
+];
+
+async function openSetup() {
+  $('.setup-modal')?.remove();
+  await flush();
+  const r = await act('setup_start');
+  if (!r.ok) return;
+  let rev = -1, timer = 0, closed = false;
+  const list = h('div', { class: 'setup-steps' });
+  const note = h('div', { class: 'setup-note' });
+  const keyEl = h('kbd', { class: 'big' });
+  const markLater = h('button', { class: 'btn sm', onclick: async () => {
+    for (let n = 3; n > 0; n--) { markLater.textContent = t('setup.mark_in', { s: n }); await new Promise(res => setTimeout(res, 1000)); }
+    markLater.textContent = t('setup.mark_later');
+    render(await call('setup_mark'));
+  } }, t('setup.mark_later'));
+  const close = async () => {
+    closed = true;
+    clearTimeout(timer);
+    modal.remove();
+    removeEventListener('keydown', onKey, true);
+    await call('setup_cancel');
+  };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  addEventListener('keydown', onKey, true);
+  const foot = h('div', { class: 'actions' },
+    h('button', { class: 'btn sm', onclick: () => { close(); openCalibrator(); } }, ic('camera'), t('setup.manual')),
+    h('span', { style: 'flex:1' }), markLater,
+    h('button', { class: 'btn sm primary', onclick: close }, t('cal.done')));
+  const modal = h('div', { class: 'modal dialog setup-modal' },
+    h('div', { class: 'box wide' },
+      h('h3', {}, t('setup.title')),
+      h('p', {}, t('setup.lead'), ' ', keyEl, ' ', t('setup.lead2')),
+      list, note, foot));
+  document.body.append(modal);
+
+  function render(res) {
+    if (!res?.ok || closed) return;
+    const st = res.setup;
+    keyEl.textContent = st.key;
+    if (st.rev !== rev) {
+      rev = st.rev;
+      S.cfg = res.config;
+      S.templates = res.templates;
+      for (const path of binders.keys()) notify(path);
+    }
+    list.replaceChildren(...SETUP_STEPS.map((step, i) => {
+      const state = i < st.step || st.done ? 'ok' : i === st.step ? (st.error ? 'err' : 'cur') : '';
+      const thumb = step.tpl && S.templates[step.tpl] && i < st.step
+        ? h('span', { class: 'sthumb', style: `background-image:url(${S.templates[step.tpl]})` }) : null;
+      return h('div', { class: `sstep ${state}`, style: `--c: var(--${step.c})` },
+        h('span', { class: 'num' }, state === 'ok' ? ic('check') : String(i + 1)),
+        h('div', { class: 'txt' }, h('b', {}, t(`setup.${step.id}`)), h('span', {}, t(`setup.${step.id}.hint`))),
+        thumb, state === 'cur' && st.busy ? h('span', { class: 'spin' }) : null);
+    }));
+    note.className = `setup-note${st.error ? ' err' : st.done ? ' ok' : ''}`;
+    note.textContent = st.error ? t(`setup.err.${st.error}`, { key: st.key }) || st.error
+      : st.done ? t('setup.done', { key: S.cfg.system.hotkey_toggle.toUpperCase() })
+      : st.hotkeys ? t('setup.waiting', { key: st.key }) : t('setup.nohotkeys');
+    markLater.hidden = st.done;
+  }
+
+  const loop = async () => {
+    if (closed) return;
+    render(await call('setup_state'));
+    timer = setTimeout(loop, 300);
+  };
+  render(r);
+  loop();
 }
 
 // ── calibrator ──────────────────────────────────────────────────────────────
@@ -1348,7 +1341,7 @@ async function commitPoint(x, y) {
 function initChrome() {
   $$('[data-i]').forEach(el => el.replaceWith(ic(el.dataset.i)));
   $$('[data-menu]').forEach(b => b.addEventListener('click', () => openMenu(b, MENUS[b.dataset.menu]())));
-  $$('[data-action="calibrate"]').forEach(b => b.addEventListener('click', () => openCalibrator()));
+  $$('[data-action="calibrate"]').forEach(b => b.addEventListener('click', () => openSetup()));
   $$('[data-action="check"]').forEach(b => b.addEventListener('click', showCheck));
   $$('[data-panel]').forEach(b => b.addEventListener('click', () => togglePanel(b.dataset.panel)));
   $('#logcard').addEventListener('click', () => togglePanel('log'));
@@ -1387,20 +1380,16 @@ async function boot() {
   if (!r.ok) { setTimeout(boot, 1500); return; }
   const ui = r.ui || {};
   lang = ui.lang || ((navigator.language || '').toLowerCase().startsWith('ru') ? 'ru' : 'en');
-  S.layout = ui.layout || {};
-  S.wires = ui.wires !== false;
   S.dock = ui.dock !== false;
-  document.body.classList.toggle('no-wires', !S.wires);
   document.body.classList.toggle('dock-min', !S.dock);
-  $('[data-zoom="wires"]').classList.toggle('on', S.wires);
   applyI18n();
   applyBoot(r);
   renderLogCard();
-  if (ui.zoom && ui.pan) { S.zoom = ui.zoom; S.pan = ui.pan; applyView(); } else requestAnimationFrame(fit);
   poll();
   previewLoop();
-  const firstRun = !Object.values(r.templates).some(Boolean) && !r.demo && !ui.layout;
-  if (firstRun) setTimeout(showGuide, 500);
+  updateLoop();
+  const firstRun = !Object.values(r.templates).some(Boolean) && !r.demo && !ui.lang;
+  if (firstRun) setTimeout(openSetup, 500);
 }
 
 boot();

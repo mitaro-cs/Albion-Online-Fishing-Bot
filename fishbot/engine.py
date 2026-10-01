@@ -14,7 +14,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 import cv2
 import numpy as np
@@ -76,6 +76,7 @@ MESSAGES = {  # English fallback, used by the CLI; the UI translates codes itsel
     "learn_bobber_fail": "Couldn't spot the bobber — keep the cursor over open water",
     "learn_bar": "Learned the reel bar ({w} px) and marker",
     "learn_bar_fail": "Couldn't spot the reel bar — retrying on the next fish",
+    "learn_hold": "Holding the button moves the marker {way}",
     "vision_error": "Calibration problem: {code} {name}",
 }
 
@@ -114,6 +115,8 @@ class Engine:
         self.on_event = on_event
         self.on_learn = None
         self.audio = None  # AudioWatcher (or a stand-in in tests)
+        self.debug_dir = None  # Path for failure snapshots
+        self._escapes = 0
         self.last_trigger = ""
         self._learn_ref = None
 
@@ -392,6 +395,7 @@ class Engine:
             s.reel_sum += took
             s.last_reel_s = round(took, 2)
             s.fail_streak = 0
+            self._escapes = 0
             s.win_streak += 1
             s.best_streak = max(s.best_streak, s.win_streak)
             self._avoid.clear()
@@ -399,6 +403,10 @@ class Engine:
         else:
             if result == "escaped":
                 self.stats.escaped += 1
+                self._escapes += 1
+                if self._escapes >= 2 and cfg.system.auto_learn and self._cfg.reel.hold_moves != "auto":
+                    self._adopt_cfg({"reel": {"hold_moves": "auto"}})  # maybe learned it wrong: re-check
+                    self._escapes = 0
             self._fail(cfg, result)
 
     def _cast(self, cfg: Config) -> None:
@@ -549,11 +557,11 @@ class Engine:
             if cfg is None:
                 return "no_game", 0.0
         rc, region = cfg.reel, cfg.regions.reel
-        ctrl = ReelController(rc)
+        ctrl = ReelController(rc) if rc.hold_moves != "auto" else None
         t0 = self.clock.now()
         appear_by = t0 + rc.appear_timeout_s
         started = last_seen = last_x = None
-        frames, result = 0, None
+        frames, result, frame = 0, None, None
         try:
             while True:
                 t = self.clock.now()
@@ -567,6 +575,10 @@ class Engine:
                         started = t
                         self.stats.hooks += 1
                         self._emit("reel_start")
+                    if ctrl is None:  # first minigame: find out which way holding pushes the marker
+                        rc = replace(rc, hold_moves=self._probe_hold(region, rc, span, m.w))
+                        ctrl = ReelController(rc)
+                        t = self.clock.now()
                     last_seen, last_x, self.reel_x = t, x, x
                     if ctrl.update(x, t):
                         self.inp.down()
@@ -580,7 +592,7 @@ class Engine:
                 if started is not None and t - started > rc.max_duration_s:
                     result = "timeout"
                     break
-                self._show(frame, "reel", lambda img: draw_reel(img, self.reel_x, rc.target, rc.deadband,
+                self._show(frame, "reel", lambda img, rc=rc: draw_reel(img, self.reel_x, rc.target, rc.deadband,
                                                                 self.inp.held))
                 frames += 1
                 self._tick()
@@ -594,7 +606,37 @@ class Engine:
         took = (last_seen - started) if started is not None else 0.0
         if result:
             return result, took
-        return ("escaped" if last_x is not None and (last_x < 0.03 or last_x > 0.97) else "caught"), took
+        outcome = "escaped" if last_x is not None and (last_x < 0.03 or last_x > 0.97) else "caught"
+        if outcome == "escaped" and frame is not None:
+            self._debug("escaped", frame)
+        return outcome, took
+
+    def _probe_hold(self, region, rc, span: float, mw: int) -> str:
+        """Release, then hold, and compare how the marker accelerates (velocity alone is fooled by inertia)."""
+        def accel(hold: bool, dur: float) -> float | None:
+            (self.inp.down if hold else self.inp.up)()
+            pts, end = [], self.clock.now() + dur
+            while self.clock.now() < end:
+                m = self._marker.find(self._grab(region))
+                if self._present(m, rc):
+                    pts.append((self.clock.now(), (m.x - mw / 2) / span))
+                self.clock.sleep(1 / 90)
+            if len(pts) < 5:
+                return None
+            ts, xs = np.array(pts).T
+            return float(2 * np.polyfit(ts - ts[0], xs, 2)[0])
+        samples = []
+        for _ in range(2):  # release/hold twice: a fish tug can't fake both
+            r, h = accel(False, 0.14), accel(True, 0.14)
+            if r is not None and h is not None:
+                samples.append(h - r)
+        self.inp.up()
+        if not samples or abs(float(np.mean(samples))) < 0.4 or len(set(np.sign(samples))) > 1:
+            return "right"  # couldn't tell: common default for now, ask again next fish
+        way = "right" if np.mean(samples) > 0 else "left"
+        self._adopt_cfg({"reel": {"hold_moves": way}})
+        self._emit("learn_hold", way=way)
+        return way
 
     # ── zero-setup learning ─────────────────────────────────────────────────
 
@@ -629,6 +671,7 @@ class Engine:
         found = find_new_object(before, after, near, scale)
         if found is None:
             self._emit("learn_bobber_fail", "warn")
+            self._debug("bobber-after", after[-1])
             return None
         tpl, (bx, by, bw, bh) = found
         # search only around where it landed: faster and no look-alikes elsewhere
@@ -648,7 +691,7 @@ class Engine:
 
     def _learn_reel(self, cfg: Config) -> Config | None:
         mon = self._monitor_region()
-        before = self._learn_ref
+        before = after = self._learn_ref
         deadline = self.clock.now() + max(2.0, cfg.reel.appear_timeout_s)
         while self.clock.now() < deadline:
             self._sleep(0.12)
@@ -667,7 +710,34 @@ class Engine:
             self._emit("learn_bar", "success", w=bw)
             return cfg
         self._emit("learn_bar_fail", "warn")
+        self._debug("bar-before", before)
+        self._debug("bar-after", after)
         return None
+
+    def _adopt_cfg(self, patch: dict) -> None:
+        with self._lock:
+            self._cfg = self._cfg.merged(patch)
+        if self.on_learn:
+            try:
+                self.on_learn(None, None, patch)
+            except Exception:
+                traceback.print_exc()
+
+    def _debug(self, tag: str, img) -> None:
+        """Keep a few snapshots of what went wrong so the user can send them."""
+        if not self.debug_dir:
+            return
+        try:
+            from .config import write_image
+            d = self.debug_dir
+            d.mkdir(parents=True, exist_ok=True)
+            if img.shape[1] > 1600:
+                img = cv2.resize(img, (1600, int(img.shape[0] * 1600 / img.shape[1])), interpolation=cv2.INTER_AREA)
+            write_image(d / f"{time.strftime('%Y%m%d-%H%M%S')}-{tag}.png", img)
+            for old in sorted(d.glob("*.png"))[:-12]:
+                old.unlink(missing_ok=True)
+        except Exception:
+            traceback.print_exc()
 
     def _adopt(self, name: str, tpl, patch: dict) -> Config:
         """Use a learned template now and hand it to the owner for saving."""

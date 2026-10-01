@@ -529,7 +529,7 @@ function buildReel() {
     row('f.reel.target', stepper('reel.target')),
     row('f.reel.deadband', stepper('reel.deadband')),
     showWhen(row('f.reel.lookahead_ms', stepper('reel.lookahead_ms')), 'reel.control', v => v === 'predictive'),
-    row('f.reel.hold_moves', select('reel.hold_moves', [['right', 'opt.right'], ['left', 'opt.left']])),
+    row('f.reel.hold_moves', select('reel.hold_moves', [['auto', 'opt.auto_dir'], ['right', 'opt.right'], ['left', 'opt.left']])),
     row('f.reel.fps', stepper('reel.fps')),
     ...fold(
       row('f.reel.edge_guard', stepper('reel.edge_guard')),
@@ -611,6 +611,7 @@ function buildSimple() {
     learn,
     h('div', { class: 's-foot' },
       h('button', { class: 'btn sm', type: 'button', onclick: forget }, ic('refresh'), t('simple.forget')),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => act('open_debug') }, ic('folder'), t('simple.debug')),
       h('button', { class: 'btn sm', type: 'button', onclick: () => setSimple(false) }, ic('layout'), t('simple.advanced'))));
   simpleEls = { stage, count, rate, run };
   return card;
@@ -721,6 +722,7 @@ function eventText(e) {
   const p = { ...e.params };
   if (e.code === 'vision_error') return t(`err.${p.code}`, { name: p.name ? t(`name.${p.name}`) : '' });
   if (p.reason) p.reason = t(`reason.${p.reason}`);
+  if (p.way) p.way = t(`opt.${p.way}`).toLowerCase();
   return t(`ev.${e.code}`, p);
 }
 

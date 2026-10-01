@@ -41,6 +41,7 @@ class SimGame:
         self.x = self.v = self.progress = self.duration = 0.0
         self.fish = (1.0, 1.0, 0.0, 0.0)
         self.caught = self.escaped = 0
+        self.invert = False  # True: holding pushes the marker left
         self.spots = [self._new_spot() for _ in range(3)]
         self.bg = self._background()
         nrng = np.random.default_rng(seed)
@@ -132,7 +133,8 @@ class SimGame:
         elif self.state == "reel":
             a1, a2, p1, p2 = self.fish
             force = a1 * math.sin(1.7 * t + p1) + a2 * math.sin(4.3 * t + p2)
-            acc = (3.0 if self.held else -3.0) + force - 1.5 * self.v
+            push = 3.0 if self.held else -3.0
+            acc = (-push if self.invert else push) + force - 1.5 * self.v
             self.v += acc * dt
             self.x += self.v * dt
             self.progress += dt

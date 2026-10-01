@@ -91,7 +91,7 @@ class ReelCfg:
     lookahead_ms: int = num(90, 0, 400, 5, "ms")
     edge_guard: float = num(0.12, 0.0, 0.45, 0.01)
     min_toggle_ms: int = num(20, 0, 200, 5, "ms")
-    hold_moves: str = choice("right", "right", "left")
+    hold_moves: str = choice("auto", "auto", "right", "left")
     fps: int = num(90, 15, 240, 5, "fps")
     appear_timeout_s: float = num(3.0, 0.5, 15, 0.5, "s")
     end_confirm_ms: int = num(350, 50, 3000, 50, "ms")

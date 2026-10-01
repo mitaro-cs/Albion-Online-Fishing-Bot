@@ -58,3 +58,14 @@ def test_learned_data_is_saved_to_profile(tmp_path):
         assert set(store.templates(api._profile)) >= {"bobber", "marker"}
     finally:
         api.shutdown()
+
+
+def test_finds_out_which_way_holding_pushes():
+    for invert, expected in ((True, "left"), (False, "right")):
+        eng, game, events = fresh_rig(seed=5)
+        game.invert = invert
+        eng.start()
+        eng.join(120)
+        assert eng.stats.catches == 4, (invert, [e["code"] for e in events])
+        assert eng._cfg.reel.hold_moves == expected
+        assert [e["code"] for e in events].count("learn_hold") == 1

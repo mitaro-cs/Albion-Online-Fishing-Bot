@@ -50,7 +50,7 @@ class ReelController:
         else:
             return self.hold  # inside the deadband: keep the current state
 
-        want = push_right if cfg.hold_moves == "right" else not push_right
+        want = push_right if cfg.hold_moves != "left" else not push_right
         if want != self.hold and (forced or (t - self.toggled_at) * 1000.0 >= cfg.min_toggle_ms):
             self.hold = want
             self.toggled_at = t

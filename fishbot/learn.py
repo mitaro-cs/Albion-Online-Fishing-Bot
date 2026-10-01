@@ -61,15 +61,24 @@ def find_new_bar(before: np.ndarray, after: np.ndarray) -> tuple[int, int, int, 
     """Bbox of a wide, thin UI element that appeared between two frames."""
     H, W = before.shape[:2]
     diff = np.abs(_gray(after) - _gray(before)).astype(np.uint8)
-    mask = (diff > 35).astype(np.uint8) * 255
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 21), np.uint8))
-    n, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    best, best_area = None, 0
-    for i in range(1, n):
-        x, y, w, h, area = (int(v) for v in stats[i])
-        if w >= 0.08 * W and w >= 5 * h and 6 <= h <= 0.12 * H and area > best_area:
-            best, best_area = (x, y, w, h), area
-    return best
+    best, best_score = None, 0.0
+    for thresh in (40, 28):  # strict first; looser if the bar is low-contrast
+        mask = (diff > thresh).astype(np.uint8) * 255
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 25), np.uint8))  # join along the bar only
+        n, _, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        for i in range(1, n):
+            x, y, w, h, area = (int(v) for v in stats[i])
+            if w < 0.06 * W or w < 4 * h or not 5 <= h <= 0.15 * H:
+                continue
+            fill = area / float(w * h)                 # a bar is solid, water noise is not
+            centred = 1 - abs(cents[i][0] - W / 2) / W  # game UI sits near the middle
+            score = area * fill * centred
+            if score > best_score:
+                best, best_score = (x, y, w, h), score
+        if best:
+            return best
+    return None
 
 
 def find_marker(strip: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:

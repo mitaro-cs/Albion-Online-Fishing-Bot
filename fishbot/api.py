@@ -54,6 +54,7 @@ class Api:
         self._store, self._screen, self._demo = store, screen, demo
         self._engine = Engine(screen, inp, focus=focus)
         self._engine.on_learn = self._learned
+        self._engine.debug_dir = store.root / "debug"
         self._lock = threading.RLock()
         self._capture: tuple[np.ndarray, dict] | None = None
         self._window = None
@@ -144,6 +145,10 @@ class Api:
 
     def _learned(self, name: str, tpl, patch: dict) -> None:
         """The engine figured out the bobber / reel bar by itself: keep it in the profile."""
+        if name is None:
+            with self._lock:
+                self._commit(self._cfg.merged(patch))
+            return
         self._save_setup(name, tpl, patch)
 
     def _save_setup(self, name: str, tpl, patch: dict) -> None:
@@ -468,6 +473,12 @@ class Api:
         settings = self._store.settings()
         settings["ui"] = prefs
         self._store.save_settings(settings)
+
+    @endpoint
+    def open_debug(self):
+        d = self._store.root / "debug"
+        d.mkdir(parents=True, exist_ok=True)
+        open_path(str(d.resolve()))
 
     @endpoint
     def open_folder(self):

@@ -595,7 +595,6 @@ function buildSimple() {
   ['regions', 'bite.use_sound', 'bite.method', 'reel.method'].forEach(p => bind(p, paintLearn));
   const power = slider('cast.power_ms');
   const card = h('section', { class: 'node simple-card' },
-    h('div', { class: 'node-head' }, h('span', { class: 'title' }, t('simple.title'))),
     h('div', { class: 's-head' },
       h('div', {}, stage, h('div', { class: 's-sub' }, t('simple.sub'))),
       h('div', { class: 's-score' }, count, rate)),
@@ -634,12 +633,27 @@ function setSimple(on) {
 function paintSimple(snap) {
   if (!simpleEls || !S.simple) return;
   const { stage, count, rate, run } = simpleEls;
-  stage.textContent = stageLabel(snap);
-  count.textContent = snap.stats.catches;
+  swapText(stage, stageLabel(snap), 'swap');
+  swapText(count, String(snap.stats.catches), 'bump');
   rate.textContent = t('simple.rate', { n: snap.stats.per_hour });
   run.replaceChildren(ic(snap.status === 'running' ? 'pause' : 'play'),
     t(snap.status === 'running' ? 'btn.pause' : snap.status === 'paused' ? 'btn.resume' : 'btn.start'),
     h('kbd', {}, S.cfg.system.hotkey_toggle.toUpperCase()));
+}
+
+// change text and replay a one-shot CSS animation, but not on the first paint
+function swapText(el, text, cls) {
+  if (el.textContent === text) return;
+  const first = !el.textContent;
+  el.textContent = text;
+  if (first) return;
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+}
+
+function stagger(root) {
+  $$('.node', root).forEach((el, i) => el.style.setProperty('--i', i));
 }
 
 function renderNodes() {
@@ -648,6 +662,7 @@ function renderNodes() {
   root.classList.toggle('simple', S.simple);
   if (S.simple) {
     root.replaceChildren(h('div', { class: 'col' }, buildSimple()), h('div', { class: 'col stretch' }, buildPreview()));
+    stagger(root);
     for (const el of $$('.node', root)) new ResizeObserver(() => drawWires()).observe(el);
     drawWires();
     if (S.snap) paintSimple(S.snap);
@@ -660,6 +675,7 @@ function renderNodes() {
     h('div', { class: 'col' }, buildBobber(), buildTrigger()),
     h('div', { class: 'col' }, buildReel()),
     h('div', { class: 'col stretch' }, buildPreview()));
+  stagger(root);
   for (const el of $$('.node', root)) new ResizeObserver(() => { drawWires(); updateCursor(); }).observe(el);
   drawWires();
   updateStage();

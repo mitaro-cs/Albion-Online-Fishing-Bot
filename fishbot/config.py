@@ -56,7 +56,7 @@ class CastCfg:
     target: str = choice("cursor", "cursor", "points", "auto")
     points: list = field(default_factory=list, metadata={"kind": "points"})
     rotate_after: int = num(2, 1, 20)
-    power_ms: int = num(900, 100, 4000, 10, "ms")
+    power_ms: int = num(450, 100, 4000, 10, "ms")
     power_jitter_ms: int = num(120, 0, 1000, 10, "ms")
     aim_jitter_px: int = num(6, 0, 60, 1, "px")
     spot_threshold: float = num(0.6, 0.3, 0.99, 0.01)
@@ -73,6 +73,8 @@ class BiteCfg:
     bite_timeout_s: float = num(35.0, 5, 180, 1, "s")
     hook_delay_ms: int = num(140, 0, 1500, 10, "ms")
     hook_jitter_ms: int = num(80, 0, 1000, 10, "ms")
+    use_sound: bool = True
+    sound_sensitivity: float = num(4.0, 1.5, 20.0, 0.5)
     grayscale: bool = True
     hsv_lo: list = hsv(0, 120, 120)
     hsv_hi: list = hsv(10, 255, 255)
@@ -128,6 +130,7 @@ class SystemCfg:
     failsafe: bool = True
     sound: bool = True
     auto_update: bool = True
+    auto_learn: bool = True
     start_delay_s: float = num(3.0, 0, 30, 0.5, "s")
     idle_fps: int = num(30, 5, 120, 5, "fps")
     hotkey_toggle: str = "f8"

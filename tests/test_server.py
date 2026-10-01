@@ -89,6 +89,7 @@ def test_calibration_flow(server):
 
 def test_errors_are_reported_not_raised(server):
     _, base, token = server
+    assert post(base, "update", {"system": {"auto_learn": False}}, token=token)["ok"]
     assert post(base, "clear_template", "marker", token=token)["ok"]
     r = post(base, "start", token=token)
     assert not r["ok"] and r["error"] == "template_missing" and r["params"]["name"] == "marker"

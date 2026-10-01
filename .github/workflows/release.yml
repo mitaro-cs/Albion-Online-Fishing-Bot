@@ -31,6 +31,7 @@ jobs:
           --paths .
           --add-data "fishbot/web;fishbot/web"
           --collect-submodules fishbot
+          --collect-all pyaudiowpatch
           packaging/launcher.py
 
       - name: Smoke test
@@ -88,4 +89,4 @@ jobs:
             - Первый запуск чуть дольше: exe распаковывается во временную папку
             - Файл не подписан: SmartScreen может предупредить → «Подробнее» → «Выполнить в любом случае»
 
-            Калибровка и настройки — в [README](https://github.com/${{ github.repository }}#-калибровка).
+            Калибровка и настройки — в [README](https://github.com/${{ github.repository }}#-как-пользоваться).

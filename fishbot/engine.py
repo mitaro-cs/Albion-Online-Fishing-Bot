@@ -16,11 +16,13 @@ import traceback
 from collections import deque
 from dataclasses import asdict, dataclass
 
+import cv2
 import numpy as np
 
 from .capture import Screen
-from .config import Config
+from .config import Config, Region
 from .controller import ReelController
+from .learn import find_marker, find_new_bar, find_new_object
 from .controls import Input
 from .system import beep, foreground_title
 from .vision import (BLUE, GREEN, PINK, RED, YELLOW, Match, TemplateFinder, VisionError, draw_box,
@@ -70,6 +72,10 @@ MESSAGES = {  # English fallback, used by the CLI; the UI translates codes itsel
     "focus_back": "Game window focused again",
     "failsafe": "Failsafe corner — stopping",
     "error": "Error: {error}",
+    "learn_bobber": "Learned the bobber ({w}×{h})",
+    "learn_bobber_fail": "Couldn't spot the bobber — keep the cursor over open water",
+    "learn_bar": "Learned the reel bar ({w} px) and marker",
+    "learn_bar_fail": "Couldn't spot the reel bar — retrying on the next fish",
     "vision_error": "Calibration problem: {code} {name}",
 }
 
@@ -106,6 +112,10 @@ class Engine:
         self.rng = rng or random.Random()
         self._focus_fn = focus
         self.on_event = on_event
+        self.on_learn = None
+        self.audio = None  # AudioWatcher (or a stand-in in tests)
+        self.last_trigger = ""
+        self._learn_ref = None
 
         self._lock = threading.RLock()
         self._cfg = Config()
@@ -331,12 +341,20 @@ class Engine:
 
     def _build(self, cfg: Config, tpl: dict) -> None:
         r = cfg.regions
-        if not r.bobber.ok:
-            raise VisionError("region_missing", name="bobber")
-        if not r.reel.ok:
-            raise VisionError("region_missing", name="reel")
-        bobber = make_finder(cfg.bite.method, tpl.get("bobber"), cfg.bite, "bobber")
-        marker = make_finder(cfg.reel.method, tpl.get("marker"), cfg.reel, "marker")
+        learn = cfg.system.auto_learn
+        bobber = marker = None  # None = learn it on the fly
+        if r.bobber.ok and (cfg.bite.method == "color" or "bobber" in tpl):
+            bobber = make_finder(cfg.bite.method, tpl.get("bobber"), cfg.bite, "bobber")
+        elif not learn:
+            if not r.bobber.ok:
+                raise VisionError("region_missing", name="bobber")
+            make_finder(cfg.bite.method, tpl.get("bobber"), cfg.bite, "bobber")
+        if r.reel.ok and (cfg.reel.method == "color" or "marker" in tpl):
+            marker = make_finder(cfg.reel.method, tpl.get("marker"), cfg.reel, "marker")
+        elif not learn:
+            if not r.reel.ok:
+                raise VisionError("region_missing", name="reel")
+            make_finder(cfg.reel.method, tpl.get("marker"), cfg.reel, "marker")
         for f, region, name in ((bobber, r.bobber, "bobber"), (marker, r.reel, "marker")):
             if isinstance(f, TemplateFinder) and (f.w > region.width or f.h > region.height):
                 raise VisionError("template_too_big", name=name)
@@ -396,6 +414,8 @@ class Engine:
         else:
             x, y = self.inp.position()
         self._target = (x, y)
+        if self._bobber is None:
+            self._learn_ref = self._snap_water(x, y)
         hold = max(0.1, (c.power_ms + self.rng.uniform(-c.power_jitter_ms, c.power_jitter_ms)) / 1000)
         self.stats.casts += 1
         self._emit("cast", n=self.stats.casts, x=x, y=y, ms=int(hold * 1000))
@@ -425,6 +445,10 @@ class Engine:
 
     def _wait_bobber(self, cfg: Config) -> Match | None:
         self._set_stage("land")
+        if self._bobber is None:
+            cfg = self._learn_bobber(cfg)
+            if cfg is None:
+                return None
         b, region = cfg.bite, cfg.regions.bobber
         deadline = self.clock.now() + b.appear_timeout_s
         first = last_seen = None
@@ -453,11 +477,17 @@ class Engine:
         return None
 
     def _wait_bite(self, cfg: Config, base: Match) -> float | None:
+        """React to the bite itself: any of score drop, dip, vanish or a splash of motion."""
+        cfg = self._cfg  # may hold a freshly learned bobber area
         self._set_stage("bite", cfg.bite.bite_timeout_s)
         b, region = cfg.bite, cfg.regions.bobber
         t0 = self.clock.now()
         deadline = t0 + b.bite_timeout_s
-        streak, by = 0, base.y
+        streak, by, score_ref = 0, base.y, base.score
+        energies: deque[float] = deque(maxlen=45)
+        prev = None
+        audio = self.audio if b.use_sound else None
+        heard_after = (audio.now() + 1.0) if audio else 0.0  # ignore the landing splash
         while self.clock.now() < deadline:
             t = self.clock.now()
             frame = self._grab(region)
@@ -465,13 +495,33 @@ class Engine:
             present = self._present(m, b)
             lost = not present or (b.method == "color" and m.area < base.area * 0.35)
             dip = present and (m.y - by) >= b.dip_px
-            if lost or dip:
+            drop = present and b.method == "template" and m.score < score_ref - 0.22
+            # splash: sudden motion right around the bobber compared to the usual waves
+            x0, y0 = int(max(0, base.x - 2.5 * base.w)), int(max(0, base.y - 2.5 * base.h))
+            x1, y1 = int(base.x + 2.5 * base.w), int(base.y + 2.5 * base.h)
+            patch = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.int16)
+            splash = False
+            if prev is not None and prev.shape == patch.shape and patch.size:
+                e = float(np.abs(patch - prev).mean())
+                if len(energies) >= 20:
+                    med = float(np.median(energies))
+                    mad = float(np.median(np.abs(np.asarray(energies) - med)))
+                    splash = e > med + 6 * mad + 3.0
+                if not splash:
+                    energies.append(e)
+            prev = patch
+            if audio is not None and audio.onset_after(heard_after):
+                self.last_trigger = "sound"  # the bite splash is audible before it's visible
+                return self.clock.now() - t0
+            if lost or dip or drop or splash:
                 streak += 1
             else:
                 streak = 0
                 by = 0.92 * by + 0.08 * m.y  # follow slow drift with the waves
-            self._show(frame, "bobber", lambda img: self._draw_bite(img, m, base, by, lost or dip))
+                score_ref = 0.95 * score_ref + 0.05 * m.score
+            self._show(frame, "bobber", lambda img: self._draw_bite(img, m, base, by, streak > 0))
             if streak >= b.confirm_frames:
+                self.last_trigger = "lost" if lost else "dip" if dip else "drop" if drop else "splash"
                 return self.clock.now() - t0
             self._tick()
             self._pace(t, cfg.system.idle_fps)
@@ -481,6 +531,8 @@ class Engine:
         self._set_stage("hook")
         b = cfg.bite
         self._sleep((b.hook_delay_ms + self.rng.uniform(0, b.hook_jitter_ms)) / 1000)
+        if self._marker is None:
+            self._learn_ref = self.screen.grab(self._monitor_region())
         self._click()
 
     def _click(self) -> None:
@@ -492,6 +544,10 @@ class Engine:
 
     def _reel(self, cfg: Config) -> tuple[str, float]:
         self._set_stage("reel")
+        if self._marker is None:
+            cfg = self._learn_reel(cfg)
+            if cfg is None:
+                return "no_game", 0.0
         rc, region = cfg.reel, cfg.regions.reel
         ctrl = ReelController(rc)
         t0 = self.clock.now()
@@ -539,6 +595,92 @@ class Engine:
         if result:
             return result, took
         return ("escaped" if last_x is not None and (last_x < 0.03 or last_x > 0.97) else "caught"), took
+
+    # ── zero-setup learning ─────────────────────────────────────────────────
+
+    def _monitor_region(self) -> Region:
+        x, y = self.inp.position()
+        mons = self.screen.monitors()
+        for m in mons[1:] or mons:
+            if m["left"] <= x < m["left"] + m["width"] and m["top"] <= y < m["top"] + m["height"]:
+                return Region(m["left"], m["top"], m["width"], m["height"])
+        m = mons[1] if len(mons) > 1 else mons[0]
+        return Region(m["left"], m["top"], m["width"], m["height"])
+
+    def _snap_water(self, x: int, y: int):
+        mon = self._monitor_region()
+        w, h = int(mon.width * 0.6), int(mon.height * 0.55)  # the cast can land well past the cursor
+        left = int(min(max(x - w // 2, mon.left), mon.left + mon.width - w))
+        top = int(min(max(y - h // 2, mon.top), mon.top + mon.height - h))
+        region = Region(left, top, w, h)
+        frames = []
+        for _ in range(3):
+            frames.append(self._grab(region))
+            self._sleep(0.06)
+        return region, frames, (x - left, y - top), mon.height / 1080
+
+    def _learn_bobber(self, cfg: Config) -> Config | None:
+        region, before, near, scale = self._learn_ref
+        self._sleep(max(1.4, cfg.bite.settle_ms / 1000))  # let it fly and land
+        after = []
+        for _ in range(5):
+            after.append(self._grab(region))
+            self._sleep(0.08)
+        found = find_new_object(before, after, near, scale)
+        if found is None:
+            self._emit("learn_bobber_fail", "warn")
+            return None
+        tpl, (bx, by, bw, bh) = found
+        # search only around where it landed: faster and no look-alikes elsewhere
+        mon = self._monitor_region()
+        sw, sh = max(bw * 8, int(mon.width * 0.22)), max(bh * 8, int(mon.height * 0.2))
+        cx, cy = region.left + bx + bw // 2, region.top + by + bh // 2
+        area = Region(int(min(max(cx - sw // 2, mon.left), mon.left + mon.width - sw)),
+                      int(min(max(cy - sh // 2, mon.top), mon.top + mon.height - sh)), sw, sh)
+        self._bobber = TemplateFinder(tpl, cfg.bite.grayscale, "bobber")
+        # how well does it match itself frame to frame? set the threshold from that
+        scores = [self._bobber.find(f).score for f in after]
+        threshold = round(min(0.62, max(0.45, min(scores) * 0.75)), 2)
+        cfg = self._adopt("bobber", tpl, {"regions": {"bobber": asdict(area)},
+                                          "bite": {"method": "template", "threshold": threshold}})
+        self._emit("learn_bobber", "success", w=tpl.shape[1], h=tpl.shape[0])
+        return cfg
+
+    def _learn_reel(self, cfg: Config) -> Config | None:
+        mon = self._monitor_region()
+        before = self._learn_ref
+        deadline = self.clock.now() + max(2.0, cfg.reel.appear_timeout_s)
+        while self.clock.now() < deadline:
+            self._sleep(0.12)
+            after = self._grab(mon)
+            bar = find_new_bar(before, after)
+            if bar is None:
+                continue
+            bx, by, bw, bh = bar
+            found = find_marker(after[by:by + bh, bx:bx + bw])
+            if found is None:
+                continue
+            tpl, _ = found
+            region = Region(mon.left + bx, mon.top + by, bw, bh)
+            self._marker = TemplateFinder(tpl, cfg.reel.grayscale, "marker")
+            cfg = self._adopt("marker", tpl, {"regions": {"reel": asdict(region)}, "reel": {"method": "template"}})
+            self._emit("learn_bar", "success", w=bw)
+            return cfg
+        self._emit("learn_bar_fail", "warn")
+        return None
+
+    def _adopt(self, name: str, tpl, patch: dict) -> Config:
+        """Use a learned template now and hand it to the owner for saving."""
+        with self._lock:
+            self._templates[name] = tpl
+            self._cfg = self._cfg.merged(patch)
+            cfg = self._cfg
+        if self.on_learn:
+            try:
+                self.on_learn(name, tpl, patch)
+            except Exception:
+                traceback.print_exc()
+        return cfg
 
     # ── session plumbing ────────────────────────────────────────────────────
 

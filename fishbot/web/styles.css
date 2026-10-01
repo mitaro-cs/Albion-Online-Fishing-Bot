@@ -525,3 +525,45 @@ body.dock-min #world { bottom: 60px; }
 .gone .logo svg { width: 26px; height: 26px; stroke-width: 2.2; }
 .gone h2 { margin: 0; font-weight: 500; color: var(--text); }
 .gone p { margin: 0; color: var(--text-3); }
+
+/* ── simple mode ────────────────────────────────────────────────────────── */
+.seg { display: inline-flex; padding: 3px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); backdrop-filter: blur(14px); }
+.seg button { height: 30px; padding: 0 14px; border-radius: 9px; color: var(--text-3); font-size: 12px; }
+.seg button:hover { color: var(--text); }
+body.simple .seg [data-mode=simple], body:not(.simple) .seg [data-mode=advanced] { background: var(--white); color: #111; }
+body.simple .adv-only { display: none; }
+#nodes.simple { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+.simple-card { padding: 22px; display: flex; flex-direction: column; gap: 16px; }
+.s-head { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; }
+.s-stage { font-size: 22px; font-weight: 500; color: var(--text); letter-spacing: -.01em; }
+.s-sub { margin-top: 6px; color: var(--text-3); line-height: 1.5; max-width: 420px; }
+.s-score { text-align: right; flex: none; }
+.s-count { font-size: 40px; font-weight: 300; line-height: 1; color: var(--text); }
+.s-rate { color: var(--text-4); font-size: 12px; margin-top: 4px; }
+.s-steps { list-style: none; margin: 0; padding: 0; counter-reset: s; display: grid; gap: 8px; }
+.s-steps li { counter-increment: s; display: grid; grid-template-columns: 30px 1fr; column-gap: 12px; align-items: center;
+  padding: 10px 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); }
+.s-steps li::before { content: counter(s); grid-row: span 2; width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+  font-weight: 600; background: rgba(255, 255, 255, .08); color: var(--text); }
+.s-steps li b { font-weight: 500; color: var(--text); }
+.s-steps li span { color: var(--text-3); font-size: 12px; }
+.s-run { height: 52px; border-radius: 14px; font-size: 15px; gap: 12px; }
+.s-run svg.i { width: 18px; height: 18px; }
+.s-row { display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: center; }
+.s-row label { color: var(--text-2); }
+.s-scale { display: flex; justify-content: space-between; color: var(--text-4); font-size: 11px; margin: 2px 64px 0 calc(16px + 9ch); }
+.s-learn { display: flex; flex-wrap: wrap; gap: 8px; }
+.s-chip { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 10px; background: var(--surface-2);
+  border: 1px solid var(--line); color: var(--text-2); font-size: 12px; }
+.s-chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); }
+.s-chip.ok i { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.s-chip b { font-weight: 400; color: var(--text-4); }
+.s-foot { display: flex; gap: 8px; margin-top: auto; flex-wrap: wrap; }
+
+.simple-card { padding: 18px; gap: 12px; }
+.s-steps { gap: 6px; }
+.s-steps li { padding: 7px 10px; }
+.s-steps li::before { width: 26px; height: 26px; }
+.s-run { height: 46px; }
+.simple-card > .card { padding: 10px 12px; }
+.simple-card .sep { margin: 6px 0; }

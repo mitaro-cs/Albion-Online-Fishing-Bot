@@ -21,6 +21,7 @@ def test_quick_setup_calibrates_from_cursor(tmp_path):
     game.spots = []
     api = Api(ProfileStore(tmp_path), SimScreen(game), SimInput(game), focus=None, hotkeys=False)
     try:
+        api.update({"system": {"auto_learn": False}})
         assert api.check()["error"] == "region_missing"
         assert api.setup_start()["setup"]["step"] == 0
 

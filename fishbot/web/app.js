@@ -122,7 +122,7 @@ async function act(method, ...args) {
 
 const S = {
   boot: null, cfg: null, schema: null, templates: {}, snap: null, logs: [], lastLog: 0,
-  dock: true, panel: null,
+  dock: true, panel: null, simple: true,
   preview: { test: null, live: true },
 };
 
@@ -572,9 +572,86 @@ function buildPreview() {
   return nodeShell('preview', h('div', {}, card, toolbar));
 }
 
+let simpleEls = null;
+
+function buildSimple() {
+  const stage = h('div', { class: 's-stage' });
+  const count = h('div', { class: 's-count' });
+  const rate = h('div', { class: 's-rate' });
+  const run = h('button', { class: 'btn primary s-run', type: 'button', onclick: () => $('#run').click() });
+  const learn = h('div', { class: 's-learn' });
+  const chip = (ok, label, detail) => h('span', { class: `s-chip${ok ? ' ok' : ''}` }, h('i'), label, h('b', {}, detail));
+  const paintLearn = () => {
+    const c = S.cfg, tp = S.templates;
+    const bob = c.regions.bobber.width >= 4 && (c.bite.method === 'color' || !!tp.bobber);
+    const bar = c.regions.reel.width >= 4 && (c.reel.method === 'color' || !!tp.marker);
+    learn.replaceChildren(
+      chip(bob, t('simple.bobber'), t(bob ? 'simple.learned' : 'simple.auto')),
+      chip(bar, t('simple.bar'), t(bar ? 'simple.learned' : 'simple.auto')),
+      chip(S.boot.sound && c.bite.use_sound, t('simple.sound'),
+        t(!c.bite.use_sound ? 'zero.off' : S.boot.sound ? 'simple.listening' : 'simple.nosound')));
+  };
+  bind('@tpl', paintLearn);
+  ['regions', 'bite.use_sound', 'bite.method', 'reel.method'].forEach(p => bind(p, paintLearn));
+  const power = slider('cast.power_ms');
+  const card = h('section', { class: 'node simple-card' },
+    h('div', { class: 's-head' },
+      h('div', {}, stage, h('div', { class: 's-sub' }, t('simple.sub'))),
+      h('div', { class: 's-score' }, count, rate)),
+    h('ol', { class: 's-steps' },
+      h('li', {}, h('b', {}, t('simple.step1')), h('span', {}, t('simple.step1b'))),
+      h('li', {}, h('b', {}, t('simple.step2')), h('span', {}, t('simple.step2b'))),
+      h('li', {}, h('b', {}, t('simple.step3', { key: S.cfg.system.hotkey_toggle.toUpperCase() })), h('span', {}, t('simple.step3b')))),
+    run,
+    h('div', { class: 'card' },
+      h('div', { class: 's-row' }, h('label', {}, t('simple.distance')), power),
+      h('div', { class: 's-scale' }, h('span', {}, t('simple.near')), h('span', {}, t('simple.far'))),
+      h('div', { class: 'sep' }),
+      h('div', { class: 'row check' }, h('label', {}, t('simple.use_sound')), toggle('bite.use_sound'))),
+    learn,
+    h('div', { class: 's-foot' },
+      h('button', { class: 'btn sm', type: 'button', onclick: forget }, ic('refresh'), t('simple.forget')),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => setSimple(false) }, ic('layout'), t('simple.advanced'))));
+  simpleEls = { stage, count, rate, run };
+  return card;
+}
+
+async function forget() {
+  const r = await act('forget');
+  if (r.ok) { S.templates = r.templates; applyConfig(r.config); notify('@tpl'); toast(t('simple.forgot')); }
+}
+
+function setSimple(on) {
+  S.simple = on;
+  document.body.classList.toggle('simple', on);
+  renderNodes();
+  if (S.snap) applySnap({ ...S.snap, logs: [] });
+  saveUi();
+}
+
+function paintSimple(snap) {
+  if (!simpleEls || !S.simple) return;
+  const { stage, count, rate, run } = simpleEls;
+  stage.textContent = stageLabel(snap);
+  count.textContent = snap.stats.catches;
+  rate.textContent = t('simple.rate', { n: snap.stats.per_hour });
+  run.replaceChildren(ic(snap.status === 'running' ? 'pause' : 'play'),
+    t(snap.status === 'running' ? 'btn.pause' : snap.status === 'paused' ? 'btn.resume' : 'btn.start'),
+    h('kbd', {}, S.cfg.system.hotkey_toggle.toUpperCase()));
+}
+
 function renderNodes() {
   binders.clear();
   const root = $('#nodes');
+  root.classList.toggle('simple', S.simple);
+  if (S.simple) {
+    root.replaceChildren(h('div', { class: 'col' }, buildSimple()), h('div', { class: 'col stretch' }, buildPreview()));
+    for (const el of $$('.node', root)) new ResizeObserver(() => drawWires()).observe(el);
+    drawWires();
+    if (S.snap) paintSimple(S.snap);
+    return;
+  }
+  simpleEls = null;
   // fixed grid: Cast | Bite + Trigger | Reel | Live vision
   root.replaceChildren(
     h('div', { class: 'col' }, buildCast()),
@@ -630,7 +707,7 @@ let uiTimer = 0;
 
 function saveUi() {
   clearTimeout(uiTimer);
-  uiTimer = setTimeout(() => call('save_ui', { lang, dock: S.dock }), 600);
+  uiTimer = setTimeout(() => call('save_ui', { lang, dock: S.dock, simple: S.simple }), 600);
 }
 
 // ── live state ──────────────────────────────────────────────────────────────
@@ -684,6 +761,7 @@ function applySnap(snap) {
     if (live) reelBar.marker.style.left = `${snap.reel_x * 100}%`;
   }
   if (prevStage !== snap.stage || prevStatus !== snap.status) updateStage();
+  paintSimple(snap);
   if (S.panel === 'stats') renderPanel();
 }
 
@@ -731,6 +809,14 @@ async function poll() {
   const r = await call('state', S.lastLog);
   polling = false;
   if (r.ok) applySnap(r);
+  if (r.ok && r.cfg_rev !== S.cfgRev) {  // config changed on the backend (e.g. the bot learned something)
+    const first = S.cfgRev === undefined;
+    S.cfgRev = r.cfg_rev;
+    if (!first && !Object.keys(pending).length) {
+      const fresh = await call('setup_state');
+      if (fresh.ok) { S.templates = fresh.templates; applyConfig(fresh.config); notify('@tpl'); }
+    }
+  }
   const busy = r.ok && r.status !== 'idle';
   setTimeout(poll, !r.ok ? 1500 : r.stage === 'reel' ? 60 : busy ? 200 : 700);
 }
@@ -1360,6 +1446,7 @@ function initChrome() {
   $$('[data-menu]').forEach(b => b.addEventListener('click', () => openMenu(b, MENUS[b.dataset.menu]())));
   $$('[data-action="calibrate"]').forEach(b => b.addEventListener('click', () => openSetup()));
   $$('[data-action="check"]').forEach(b => b.addEventListener('click', showCheck));
+  $$('[data-action="mode"]').forEach(b => b.addEventListener('click', () => setSimple(b.dataset.mode === 'simple')));
   $$('[data-panel]').forEach(b => b.addEventListener('click', () => togglePanel(b.dataset.panel)));
   $('#logcard').addEventListener('click', () => togglePanel('log'));
   $('#run').addEventListener('click', async () => { await flush(); const r = await act('toggle'); if (r.ok) poll(); });
@@ -1398,6 +1485,8 @@ async function boot() {
   const ui = r.ui || {};
   lang = ui.lang || ((navigator.language || '').toLowerCase().startsWith('ru') ? 'ru' : 'en');
   S.dock = ui.dock !== false;
+  S.simple = ui.simple !== false;
+  document.body.classList.toggle('simple', S.simple);
   document.body.classList.toggle('dock-min', !S.dock);
   applyI18n();
   applyBoot(r);
@@ -1405,8 +1494,7 @@ async function boot() {
   poll();
   previewLoop();
   updateLoop();
-  const firstRun = !Object.values(r.templates).some(Boolean) && !r.demo && !ui.lang;
-  if (firstRun) setTimeout(openSetup, 500);
+
 }
 
 boot();

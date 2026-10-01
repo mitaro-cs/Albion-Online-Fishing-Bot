@@ -65,8 +65,12 @@
     </div>
     <div class="subtitle"><span data-t="subtitle"></span> v<span id="version"></span><span class="demo" id="demo-tag" data-t="demo" hidden></span></div>
     <div class="cluster r">
-      <button class="btn primary" data-action="calibrate"><i data-i="camera"></i><span data-t="btn.calibrate"></span></button>
-      <button class="btn" data-action="check"><i data-i="checkCircle"></i><span data-t="btn.check"></span></button>
+      <div class="seg">
+        <button data-action="mode" data-mode="simple" data-t="mode.simple"></button>
+        <button data-action="mode" data-mode="advanced" data-t="mode.advanced"></button>
+      </div>
+      <button class="btn primary adv-only" data-action="calibrate"><i data-i="camera"></i><span data-t="btn.calibrate"></span></button>
+      <button class="btn adv-only" data-action="check"><i data-i="checkCircle"></i><span data-t="btn.check"></span></button>
     </div>
   </div>
 

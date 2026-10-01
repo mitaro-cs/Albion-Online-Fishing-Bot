@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="#-быстрый-старт">Быстрый старт</a> ·
-  <a href="#-калибровка">Калибровка</a> ·
+  <a href="#-как-пользоваться">Как пользоваться</a> ·
   <a href="#-как-это-работает">Как это работает</a> ·
   <a href="#-настройки">Настройки</a> ·
   <a href="#-решение-проблем">FAQ</a> ·
@@ -104,39 +104,30 @@ python -m fishbot
 Окно рисуется через WebView2 (есть в Windows 10/11). Если его нет — интерфейс откроется в браузере.
 </details>
 
-## ◦ Калибровка
+## ◦ Как пользоваться
 
-Без скриншотов: рыбачишь как обычно, наводишь мышь и жмёшь <kbd>F7</kbd> прямо в игре. Один раз на профиль, ~1 минута.
+Настраивать ничего не нужно.
 
-<table>
-<tr>
-<td width="52%" valign="top">
+1. Встань у воды с удочкой (игра — в окне или без рамки).
+2. Наведи мышь на воду, куда забрасывать.
+3. Нажми <kbd>F8</kbd> в игре.
 
-1. Нажми **Калибровка** — откроется «Быстрая настройка».
-2. **Поплавок.** Забрось, дождись, пока поплавок ляжет, наведи на него → <kbd>F7</kbd>. Бот сам вырежет поплавок и задаст зону поиска.
-3. **Левый край шкалы.** Подсеки рыбу; во время мини-игры наведи на левый край шкалы → <kbd>F7</kbd>.
-4. **Правый край шкалы.** Наведи на правый край → <kbd>F7</kbd>. Маркер бот найдёт сам — по движению.
-5. Готово — жми <kbd>F8</kbd> в игре.
+Бот сам всё изучит:
 
-Цель заброса по умолчанию — **курсор**: перед стартом наведи мышь на воду. Точки или авто-поиск косяков включаются в ноде **«Заброс»**.
+- **Поплавок** — сравнивает воду до и после заброса; новый предмет на воде и есть поплавок.
+- **Шкала мини-игры** — сравнивает экран до и после подсечки; новая длинная полоса — шкала, выделяющийся на ней элемент — маркер.
+- **Поклёвка** — подсекает на любой из признаков: звук всплеска (слушает звук игры, микрофон не нужен), нырок поплавка, его исчезновение или резкое движение воды вокруг.
 
-</td>
-<td width="48%" valign="top">
-<img src="docs/assets/setup-ru.png" alt="Быстрая настройка" width="100%">
-</td>
-</tr>
-</table>
-
-**Проверка** покажет, чего не хватает, а кнопки **Тест** на нодах проверяют детекцию на живом экране. Если шаг не получился, бот подскажет, что сделать, и просто ждёт повторного <kbd>F7</kbd>.
+Первая рыба уходит на обучение и может сорваться; дальше всё сохраняется в профиль. Сменил место — нажми **«Переобучить»**. Если бросает слишком далеко или близко — ползунок **«Дальность заброса»**. Больше на главном экране ничего нет; всё остальное — в режиме **«Расширенно»**.
 
 <details>
-<summary>Ручная калибровка по снимку (для тонкой настройки)</summary>
+<summary>Ручная настройка (если автоматика не справилась)</summary>
 
 <br>
 
-«Быстрая настройка» → **Ручная калибровка** → **Снимок**, затем выделить мышью зоны и шаблоны. Здесь же задаются точки заброса и зона воды + шаблон косяка для авто-поиска.
+**Расширенно → Калибровка** открывает «Быструю настройку»: наведи на поплавок → <kbd>F7</kbd>, в мини-игре наведи на левый край шкалы → <kbd>F7</kbd>, на правый → <kbd>F7</kbd>. Там же есть калибровка по снимку экрана.
 
-<img src="docs/assets/calibration-ru.jpg" alt="Калибратор" width="100%">
+<img src="docs/assets/setup-ru.png" alt="Быстрая настройка" width="60%">
 </details>
 
 ## ◦ Как это работает
@@ -269,7 +260,7 @@ Screen-vision fishing bot for Albion Online with a predictive reel controller an
 
 **Quick start** (Windows 10/11, Python 3.10+): `git clone …`, then `run.bat`. Try it without the game: `run.bat --demo`.
 
-**Calibrate in the game, no screenshots:** *Calibrate* opens Quick setup — point at the bobber → <kbd>F7</kbd>; during the minigame point at the left end of the bar → <kbd>F7</kbd>, then the right end → <kbd>F7</kbd> (the marker is found by its motion). Manual screenshot calibration is still available for fine-tuning. *Check setup* lists anything missing, *Test* buttons run detection on the live screen.
+**No setup:** stand at the water, point the mouse at it and press <kbd>F8</kbd>. The bot learns the bobber (what appears after the cast), the reel bar (what appears after the hook) and hooks on the bite splash sound, a dip, the bobber vanishing or a burst of motion. Moved to a new spot — press *Relearn*. Manual calibration is still available in *Advanced*.
 
 **Hotkeys:** <kbd>F8</kbd> start / pause, <kbd>F9</kbd> stop, mouse to the top-left corner — emergency stop. The bot pauses automatically when the game loses focus and always releases the mouse button on exit.
 

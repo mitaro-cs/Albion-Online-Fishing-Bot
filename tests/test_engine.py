@@ -35,6 +35,7 @@ def test_hysteresis_mode_also_lands_fish():
 
 
 def test_validate_reports_missing_calibration(rig):
+    rig.cfg.system.auto_learn = False  # with auto-learn on, missing calibration is learned instead
     rig.engine.configure(rig.cfg, {})
     with pytest.raises(VisionError) as e:
         rig.engine.start()

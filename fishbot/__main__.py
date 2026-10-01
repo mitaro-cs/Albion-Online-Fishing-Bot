@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         from .system import foreground_title
         screen, inp, focus, profile = MssScreen(), system_input(), foreground_title, args.profile
 
-    api = Api(store, screen, inp, demo=args.demo, focus=focus, profile=profile)
+    api = Api(store, screen, inp, demo=args.demo, focus=focus, profile=profile, audio=not args.demo)
     try:
         if args.cli:
             return run_cli(api)

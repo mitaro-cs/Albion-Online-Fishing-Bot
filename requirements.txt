@@ -3,3 +3,4 @@ opencv-python-headless>=4.8
 mss>=9.0
 pynput>=1.7.6
 pywebview>=5.0
+PyAudioWPatch>=0.2.12; sys_platform == "win32"

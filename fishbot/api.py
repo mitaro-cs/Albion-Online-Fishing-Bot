@@ -50,9 +50,10 @@ def endpoint(fn):
 
 class Api:
     def __init__(self, store: ProfileStore, screen: Screen, inp: Input, demo: bool = False,
-                 focus=foreground_title, profile: str | None = None, hotkeys: bool = True):
+                 focus=foreground_title, profile: str | None = None, hotkeys: bool = True, audio: bool = False):
         self._store, self._screen, self._demo = store, screen, demo
         self._engine = Engine(screen, inp, focus=focus)
+        self._engine.on_learn = self._learned
         self._lock = threading.RLock()
         self._capture: tuple[np.ndarray, dict] | None = None
         self._window = None
@@ -68,6 +69,11 @@ class Api:
         self.quit = threading.Event()
         self._updater = Updater(self._cfg.system.auto_update)
         self._updater.start()
+        from .audio import AudioWatcher
+        self._audio = AudioWatcher(self._cfg.bite.sound_sensitivity)
+        if audio:
+            self._audio.start()
+            self._engine.audio = self._audio
 
     # ── internals ───────────────────────────────────────────────────────────
 
@@ -83,6 +89,7 @@ class Api:
         self._engine.join(2)
         self._engine.inp.release()
         self._hotkeys.stop()
+        self._audio.stop()
         self._updater.finish()
 
     def _load(self) -> None:
@@ -135,6 +142,10 @@ class Api:
             st["rev"] += 1
             self._mark_lock.release()
 
+    def _learned(self, name: str, tpl, patch: dict) -> None:
+        """The engine figured out the bobber / reel bar by itself: keep it in the profile."""
+        self._save_setup(name, tpl, patch)
+
     def _save_setup(self, name: str, tpl, patch: dict) -> None:
         with self._lock:
             write_image(self._store.template_path(self._profile, name), tpl)
@@ -149,10 +160,13 @@ class Api:
 
     def _commit(self, cfg: Config) -> None:
         with self._lock:
+            self._rev = getattr(self, "_rev", 0) + 1
             self._cfg = cfg
             self._store.save(self._profile, cfg)
             self._engine.configure(cfg, self._templates)
             self._bind_hotkeys()
+            if hasattr(self, "_audio"):
+                self._audio.set_sensitivity(cfg.bite.sound_sensitivity)
 
     def _thumbs(self) -> dict:
         return {t: (to_data_url(self._templates[t], 240) if t in self._templates else None) for t in TEMPLATES}
@@ -188,6 +202,7 @@ class Api:
             "templates": self._thumbs(),
             "ui": self._store.settings().get("ui", {}),
             "hotkeys": self._hotkeys.ok,
+            "sound": self._audio.ok,
             "monitors": len(self._screen.monitors()) - 1,
             "data_dir": str(self._store.root.resolve()),
         }
@@ -210,7 +225,7 @@ class Api:
 
     @endpoint
     def state(self, since: int = 0):
-        return self._engine.snapshot(int(since))
+        return {**self._engine.snapshot(int(since)), "cfg_rev": getattr(self, "_rev", 0)}
 
     @endpoint
     def start(self):
@@ -297,6 +312,22 @@ class Api:
             self.quit.set()
         threading.Thread(target=close, daemon=True).start()
         return result
+
+    @endpoint
+    def forget(self):
+        """Drop the learned bobber / reel bar so the bot learns them again (new spot, new UI scale)."""
+        self._halt()
+        with self._lock:
+            for name in ("bobber", "marker"):
+                self._store.template_path(self._profile, name).unlink(missing_ok=True)
+            self._templates = self._store.templates(self._profile)
+            cfg = Config.from_dict(self._cfg.to_dict())
+            cfg.regions.bobber = Region()
+            cfg.regions.reel = Region()
+            cfg.bite.threshold = Config().bite.threshold
+            cfg.bite.method = cfg.reel.method = "template"
+            self._commit(cfg)
+            return {"config": cfg.to_dict(), "templates": self._thumbs()}
 
     @endpoint
     def reset_stats(self):

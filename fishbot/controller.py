@@ -30,22 +30,24 @@ class ReelController:
             return self.x
         return self.x + self.v * self.cfg.lookahead_ms / 1000.0
 
-    def update(self, x: float, t: float) -> bool:
+    def update(self, x: float, t: float, target: float | None = None, band: float | None = None) -> bool:
+        """``target``/``band`` override the config, e.g. to follow a moving green zone."""
         cfg = self.cfg
+        target = cfg.target if target is None else target
+        half = (cfg.deadband if band is None else band) / 2
         if self.x is not None and self.t is not None and t > self.t:
             raw = (x - self.x) / (t - self.t)
             self.v = 0.55 * raw + 0.45 * self.v  # EMA keeps single-frame jitter out
         self.x, self.t = x, t
 
         p = self.predicted()
-        half = cfg.deadband / 2
         if x < cfg.edge_guard:
             push_right, forced = True, True
         elif x > 1.0 - cfg.edge_guard:
             push_right, forced = False, True
-        elif p < cfg.target - half:
+        elif p < target - half:
             push_right, forced = True, False
-        elif p > cfg.target + half:
+        elif p > target + half:
             push_right, forced = False, False
         else:
             return self.hold  # inside the deadband: keep the current state

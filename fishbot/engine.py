@@ -8,6 +8,7 @@ mouse button is always released on the way out (``finally``).
 """
 from __future__ import annotations
 
+import logging
 import random
 import statistics
 import threading
@@ -22,7 +23,7 @@ import numpy as np
 from .capture import Screen
 from .config import Config, Region
 from .controller import ReelController
-from .learn import find_marker, find_new_bar, find_new_object
+from .learn import find_marker, find_new_bar, find_new_object, green_span
 from .controls import Input
 from .system import beep, foreground_title
 from .vision import (BLUE, GREEN, PINK, RED, YELLOW, Match, TemplateFinder, VisionError, draw_box,
@@ -77,6 +78,7 @@ MESSAGES = {  # English fallback, used by the CLI; the UI translates codes itsel
     "learn_bar": "Learned the reel bar ({w} px) and marker",
     "learn_bar_fail": "Couldn't spot the reel bar — retrying on the next fish",
     "learn_hold": "Holding the button moves the marker {way}",
+    "relearn_bar": "The learned reel bar never moves — learning it again",
     "vision_error": "Calibration problem: {code} {name}",
 }
 
@@ -117,6 +119,7 @@ class Engine:
         self.audio = None  # AudioWatcher (or a stand-in in tests)
         self.debug_dir = None  # Path for failure snapshots
         self._escapes = 0
+        self.reel_target = None
         self.last_trigger = ""
         self._learn_ref = None
 
@@ -562,6 +565,9 @@ class Engine:
         appear_by = t0 + rc.appear_timeout_s
         started = last_seen = last_x = None
         frames, result, frame = 0, None, None
+        xs: list[float] = []
+        learned = cfg.system.auto_learn
+        self.reel_target = None
         try:
             while True:
                 t = self.clock.now()
@@ -580,7 +586,19 @@ class Engine:
                         ctrl = ReelController(rc)
                         t = self.clock.now()
                     last_seen, last_x, self.reel_x = t, x, x
-                    if ctrl.update(x, t):
+                    zone = green_span(frame)  # keep the marker inside the green zone, wherever it is
+                    tgt = band = None
+                    if zone is not None:
+                        W = frame.shape[1]
+                        tgt = min(1.0, max(0.0, ((zone[0] + zone[1]) / 2 * W - m.w / 2) / span))
+                        band = max(0.02, (zone[1] - zone[0]) * W / span * 0.45)
+                    self.reel_target = tgt
+                    xs.append(x)
+                    if (learned and len(xs) >= 40 and max(xs) - min(xs) < 0.006
+                            and t - started > 1.2):  # "marker" never moves: we learned the wrong thing
+                        self._forget_bar()
+                        return "no_game", 0.0
+                    if ctrl.update(x, t, tgt, band):
                         self.inp.down()
                     else:
                         self.inp.up()
@@ -592,7 +610,7 @@ class Engine:
                 if started is not None and t - started > rc.max_duration_s:
                     result = "timeout"
                     break
-                self._show(frame, "reel", lambda img, rc=rc: draw_reel(img, self.reel_x, rc.target, rc.deadband,
+                self._show(frame, "reel", lambda img, rc=rc: draw_reel(img, self.reel_x, self.reel_target or rc.target, rc.deadband,
                                                                 self.inp.held))
                 frames += 1
                 self._tick()
@@ -692,7 +710,8 @@ class Engine:
     def _learn_reel(self, cfg: Config) -> Config | None:
         mon = self._monitor_region()
         before = after = self._learn_ref
-        deadline = self.clock.now() + max(2.0, cfg.reel.appear_timeout_s)
+        rejected: list[tuple[int, int]] = []
+        deadline = self.clock.now() + max(2.5, cfg.reel.appear_timeout_s)
         while self.clock.now() < deadline:
             self._sleep(0.12)
             after = self._grab(mon)
@@ -705,21 +724,50 @@ class Engine:
                 continue
             tpl, _ = found
             region = Region(mon.left + bx, mon.top + by, bw, bh)
-            self._marker = TemplateFinder(tpl, cfg.reel.grayscale, "marker")
-            cfg = self._adopt("marker", tpl, {"regions": {"reel": asdict(region)}, "reel": {"method": "template"}})
+            if any(abs(bx - rx) < 12 and abs(by - ry) < 12 for rx, ry in rejected):
+                continue
+            try:
+                finder = TemplateFinder(tpl, cfg.reel.grayscale, "marker")
+            except VisionError:
+                continue
+            xs, scores = [], []
+            for _ in range(8):  # the real marker moves; a static icon or text does not
+                self._sleep(0.05)
+                mm = finder.find(self._grab(region))
+                if mm is not None:
+                    xs.append(mm.x)
+                    scores.append(mm.score)
+            if len(xs) < 5 or max(xs) - min(xs) < 3:
+                rejected.append((bx, by))
+                self._debug("bar-static", after)
+                continue
+            self._marker = finder
+            threshold = round(min(0.62, max(0.4, min(scores) * 0.75)), 2)  # it changes background as it moves
+            cfg = self._adopt("marker", tpl, {"regions": {"reel": asdict(region)},
+                                              "reel": {"method": "template", "threshold": threshold}})
             self._emit("learn_bar", "success", w=bw)
+            shot = after.copy()
+            cv2.rectangle(shot, (bx, by), (bx + bw, by + bh), (99, 230, 245), 2)
+            self._debug("bar-learned", shot)
             return cfg
         self._emit("learn_bar_fail", "warn")
         self._debug("bar-before", before)
         self._debug("bar-after", after)
         return None
 
-    def _adopt_cfg(self, patch: dict) -> None:
+    def _forget_bar(self) -> None:
+        self._marker = None
+        self._emit("relearn_bar", "warn")
+        with self._lock:
+            self._templates.pop("marker", None)
+        self._adopt_cfg({"regions": {"reel": asdict(Region())}}, forget="marker")
+
+    def _adopt_cfg(self, patch: dict, forget: str | None = None) -> None:
         with self._lock:
             self._cfg = self._cfg.merged(patch)
         if self.on_learn:
             try:
-                self.on_learn(None, None, patch)
+                self.on_learn(forget, None, patch)
             except Exception:
                 traceback.print_exc()
 
@@ -912,6 +960,7 @@ class Engine:
             self._log_id += 1
             event = {"id": self._log_id, "ts": time.time(), "level": level, "code": code, "params": params}
             self.logs.append(event)
+        logging.getLogger("fishbot.events").info(format_event(event))
         if self.on_event:
             try:
                 self.on_event(event)

@@ -73,7 +73,8 @@ def find_new_bar(before: np.ndarray, after: np.ndarray) -> tuple[int, int, int, 
                 continue
             fill = area / float(w * h)                 # a bar is solid, water noise is not
             centred = 1 - abs(cents[i][0] - W / 2) / W  # game UI sits near the middle
-            score = area * fill * centred
+            greenish = float((green_mask(after[y:y + h, x:x + w]) > 0).mean())
+            score = area * fill * centred * (1 + 20 * min(greenish, 0.25))  # the reel bar carries a green zone
             if score > best_score:
                 best, best_score = (x, y, w, h), score
         if best:
@@ -86,6 +87,8 @@ def find_marker(strip: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int
     g = _gray(strip).astype(np.float32)
     H, W = g.shape
     background = np.median(g, axis=1, keepdims=True)           # per-row colour of the track
+    green = green_mask(strip) > 0
+    g = np.where(green, np.broadcast_to(background, g.shape), g)  # the green zone is not the marker
     dev = np.abs(g - background).sum(axis=0)
     dev = np.convolve(dev, np.ones(3) / 3, mode="same")
     edge = max(2, int(W * 0.015))                               # bar frame / rounded ends
@@ -110,3 +113,28 @@ def find_marker(strip: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int
     if y1 - y0 < 4:
         y0, y1 = 0, H
     return strip[y0:y1, x0:x1].copy(), (x0, y0, x1 - x0, y1 - y0)
+
+
+def green_mask(img: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    return cv2.inRange(hsv, (35, 70, 60), (90, 255, 255))
+
+
+def green_span(strip: np.ndarray) -> tuple[float, float] | None:
+    """The green "safe" zone on the reel bar as (start, end), 0..1 across the bar."""
+    cols = (green_mask(strip) > 0).mean(axis=0) > 0.3
+    if not cols.any():
+        return None
+    best = (0, 0)
+    start = None
+    for i, on in enumerate(np.append(cols, False)):
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            if i - start > best[1] - best[0]:
+                best = (start, i)
+            start = None
+    w = cols.size
+    if best[1] - best[0] < max(3, w * 0.02):
+        return None
+    return best[0] / w, best[1] / w

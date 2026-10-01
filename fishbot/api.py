@@ -145,8 +145,11 @@ class Api:
 
     def _learned(self, name: str, tpl, patch: dict) -> None:
         """The engine figured out the bobber / reel bar by itself: keep it in the profile."""
-        if name is None:
+        if tpl is None:  # a config change, or "forget this template"
             with self._lock:
+                if name:
+                    self._store.template_path(self._profile, name).unlink(missing_ok=True)
+                    self._templates = self._store.templates(self._profile)
                 self._commit(self._cfg.merged(patch))
             return
         self._save_setup(name, tpl, patch)

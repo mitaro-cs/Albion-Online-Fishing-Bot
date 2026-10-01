@@ -69,3 +69,29 @@ def test_finds_out_which_way_holding_pushes():
         assert eng.stats.catches == 4, (invert, [e["code"] for e in events])
         assert eng._cfg.reel.hold_moves == expected
         assert [e["code"] for e in events].count("learn_hold") == 1
+
+
+def test_ignores_static_panel_and_heals_a_wrong_bar():
+    eng, game, events = fresh_rig(seed=7)
+    game.decoy = True
+    eng.start()
+    eng.join(150)
+    assert eng.stats.catches == 4, [e["code"] for e in events]
+    reel = eng._cfg.regions.reel
+    assert abs(reel.left - BAR.left) <= 6, reel          # the real bar, not the "A" panel
+
+    # a profile that already learned the panel (like v1.2.0 could): the bot notices and relearns
+    from fishbot.config import Region
+    eng2, game2, events2 = fresh_rig(seed=8)
+    game2.decoy = True
+    panel = Region(500, 433, 252, 49)
+    a_icon = game2.render(Region(500, 433, 1, 1))  # warm up renderer
+    game2._start_reel()
+    a_icon = game2.render(Region(505, 440, 30, 38))
+    game2._set("idle")
+    cfg = eng2._cfg.merged({"regions": {"reel": {"left": 505, "top": 440, "width": panel.width - 10, "height": 38}}})
+    eng2.configure(cfg, {"marker": a_icon})
+    eng2.start()
+    eng2.join(200)
+    codes = [e["code"] for e in events2]
+    assert "relearn_bar" in codes and eng2.stats.catches == 4, codes

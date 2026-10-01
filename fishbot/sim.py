@@ -42,6 +42,10 @@ class SimGame:
         self.fish = (1.0, 1.0, 0.0, 0.0)
         self.caught = self.escaped = 0
         self.invert = False  # True: holding pushes the marker left
+        self.green = True    # the marker must be kept inside a moving green zone
+        self.decoy = False   # a static UI panel ("A" key hint) that pops up with the minigame
+        self.zone_phase = 0.0
+        self.outside = 0.0
         self.spots = [self._new_spot() for _ in range(3)]
         self.bg = self._background()
         nrng = np.random.default_rng(seed)
@@ -100,8 +104,15 @@ class SimGame:
     def _set(self, state: str) -> None:
         self.state, self.state_t = state, self.t
 
+    def zone(self) -> tuple[float, float]:
+        """Green zone (centre, width) the marker has to stay in — it drifts along the bar."""
+        if not self.green:
+            return 0.5, 1.0
+        return 0.5 + 0.26 * math.sin(0.8 * (self.t - self.state_t) + self.zone_phase), 0.24
+
     def _start_reel(self) -> None:
-        self.x, self.v, self.progress = 0.5, 0.0, 0.0
+        self.x, self.v, self.progress, self.outside = 0.5, 0.0, 0.0, 0.0
+        self.zone_phase = self.rng.uniform(0, 6.28)
         self.duration = self.rng.uniform(3.5, 6.0)
         self.fish = (self.rng.uniform(1.0, 1.8), self.rng.uniform(0.4, 0.9),
                      self.rng.uniform(0, 6.28), self.rng.uniform(0, 6.28))
@@ -137,8 +148,13 @@ class SimGame:
             acc = (-push if self.invert else push) + force - 1.5 * self.v
             self.v += acc * dt
             self.x += self.v * dt
-            self.progress += dt
-            if self.x <= 0.0 or self.x >= 1.0:
+            zc, zw = self.zone()
+            if abs(self.x - zc) <= zw / 2:
+                self.progress += dt
+                self.outside = 0.0
+            else:
+                self.outside += dt  # line tension builds while the fish is out of the green
+            if self.x <= 0.0 or self.x >= 1.0 or self.outside > 1.5:
                 self.escaped += 1
                 self._set("idle")
             elif self.progress >= self.duration:
@@ -191,7 +207,12 @@ class SimGame:
                     rr = int(8 + 10 * ((age * 1.6 + i / 3) % 1))
                     cv2.ellipse(img, (int(bx), int(by + 6)), (rr, rr // 3), 0, 0, 360, (225, 225, 225), 1, cv2.LINE_AA)
             elif self.state == "reel":
-                draw_bar(img, BAR.left - ox, BAR.top - oy, self.x, self.progress / self.duration)
+                draw_bar(img, BAR.left - ox, BAR.top - oy, self.x, self.progress / self.duration,
+                         self.zone() if self.green else None)
+                if self.decoy:
+                    x0, y0 = 500 - ox, 433 - oy
+                    cv2.rectangle(img, (x0, y0), (x0 + 252, y0 + 49), (140, 90, 40), -1)
+                    cv2.putText(img, "A", (x0 + 10, y0 + 38), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (250, 250, 250), 3, cv2.LINE_AA)
             elif self.state == "reward":
                 cv2.putText(img, "+1", (int(W / 2 - ox - 14), int(H - 240 - oy - age * 60)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (99, 230, 245), 2, cv2.LINE_AA)
@@ -216,12 +237,16 @@ def draw_spot(img, x: float, y: float, t: float) -> None:
     cv2.circle(img, (int(x), int(y)), 2 + int(1.5 * (1 + math.sin(t * 5))), (240, 235, 225), -1, cv2.LINE_AA)
 
 
-def draw_bar(img, x: float, y: float, pos: float, progress: float) -> None:
+def draw_bar(img, x: float, y: float, pos: float, progress: float, zone=None) -> None:
     x, y = int(x), int(y)
     cv2.rectangle(img, (x - 3, y - 3), (x + BAR.width + 2, y + BAR.height + 2), (24, 24, 26), -1)
     cv2.rectangle(img, (x, y), (x + BAR.width - 1, y + BAR.height - 1), (58, 52, 46), -1)
     cv2.rectangle(img, (x - 3, y - 3), (x + BAR.width + 2, y + BAR.height + 2), (190, 190, 190), 1)
-    cv2.line(img, (x, y - 8), (x + int(BAR.width * min(1.0, progress)), y - 8), (160, 231, 110), 3)
+    if zone is not None:
+        zc, zw = zone
+        z0, z1 = int(x + (zc - zw / 2) * BAR.width), int(x + (zc + zw / 2) * BAR.width)
+        cv2.rectangle(img, (max(x, z0), y + 2), (min(x + BAR.width - 1, z1), y + BAR.height - 3), (70, 190, 80), -1)
+    cv2.line(img, (x, y - 8), (x + int(BAR.width * min(1.0, progress)), y - 8), (225, 225, 225), 3)
     mx = x + MARKER_W // 2 + pos * (BAR.width - MARKER_W)
     cy = y + BAR.height // 2
     cv2.ellipse(img, (int(mx), cy), (MARKER_W // 2 - 1, MARKER_H // 2 - 2), 0, 0, 360, (20, 20, 20), -1, cv2.LINE_AA)
@@ -273,7 +298,7 @@ def make_templates() -> dict[str, np.ndarray]:
     spot = canvas.copy()
     draw_spot(spot, 100, 60, 0.0)
     bar = np.zeros((BAR.height + 40, BAR.width + 40, 3), np.uint8)
-    draw_bar(bar, 20, 20, 0.5, 0.0)
+    draw_bar(bar, 20, 20, 0.5, 0.0, (0.12, 0.1))  # zone away from the marker, like a user's crop
     mx = 20 + MARKER_W // 2 + int(0.5 * (BAR.width - MARKER_W))
     return {
         "bobber": bob[60 - 13:60 + 9, 100 - 10:100 + 10].copy(),

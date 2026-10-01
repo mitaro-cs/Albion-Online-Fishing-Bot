@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install -r requirements.txt pyinstaller pytest
+
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Build exe
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name AlbionFishingBot
+          --icon packaging/icon.ico
+          --paths .
+          --add-data "fishbot/web;fishbot/web"
+          --collect-submodules fishbot
+          packaging/launcher.py
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/AlbionFishingBot.exe -ArgumentList "--demo","--browser","--port","8790","--data","$env:RUNNER_TEMP\smoke" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 90 -and -not $ok; $i++) {
+            Start-Sleep 1
+            try { $ok = (Invoke-WebRequest http://127.0.0.1:8790/ -UseBasicParsing).Content -match "Albion Fishing Bot" } catch {}
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { Get-Content "$env:RUNNER_TEMP\smoke\fishbot.log" -ErrorAction SilentlyContinue; throw "exe did not serve the UI" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AlbionFishingBot
+          path: dist/AlbionFishingBot.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AlbionFishingBot.exe
+          body: |
+            **AlbionFishingBot.exe** — один файл, установка не нужна. Положите в отдельную папку и запустите: профили и шаблоны сохраняются рядом, в `data/`.
+
+            - Windows 10/11 (окно использует WebView2 — он есть в системе; без него интерфейс откроется в браузере)
+            - Попробовать без игры: `AlbionFishingBot.exe --demo`
+            - Первый запуск чуть дольше: exe распаковывается во временную папку
+            - Файл не подписан: SmartScreen может предупредить → «Подробнее» → «Выполнить в любом случае»
+
+            Калибровка и настройки — в [README](https://github.com/${{ github.repository }}#-калибровка).

@@ -76,7 +76,9 @@
 
 ## ◦ Быстрый старт
 
-**Нужно:** Windows 10/11, [Python 3.10+](https://www.python.org/downloads/) (галочка *Add python.exe to PATH*), игра в режиме «Окно» или «Без рамки».
+**Проще всего:** скачай `AlbionFishingBot.exe` из [Releases](https://github.com/mitaro-cs/Albion-Online-Fishing-Bot/releases/latest), положи в отдельную папку и запусти — Python не нужен. Профили сохраняются рядом, в `data/`. Без игры: `AlbionFishingBot.exe --demo`.
+
+**Из исходников:** Windows 10/11, [Python 3.10+](https://www.python.org/downloads/) (галочка *Add python.exe to PATH*), игра в режиме «Окно» или «Без рамки».
 
 ```bat
 git clone https://github.com/mitaro-cs/Albion-Online-Fishing-Bot.git

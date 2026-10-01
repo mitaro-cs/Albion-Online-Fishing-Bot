@@ -29,16 +29,17 @@ def run(data_dir: Path) -> dict:
         # running from source: only the data we created; the code is the user's checkout
         shutil.rmtree(t["data"], ignore_errors=True)
         return {"scheduled": False, "removed": [str(t["data"])]}
-    pids = {os.getpid(), os.getppid()}
     script = Path(tempfile.gettempdir()) / f"fishbot-uninstall-{os.getpid()}.bat"
-    lines = ["@echo off", ":wait"]
-    for pid in pids:
-        lines.append(f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (timeout /t 1 /nobreak >nul & goto wait)')
-    lines.append(f'rmdir /s /q "{t["data"]}" 2>nul')
-    for f in [*t["extra"], t["exe"]]:
-        lines.append(f'del /f /q "{f}" 2>nul')
-    lines.append(f'rmdir "{t["exe"].parent}" 2>nul')  # only if now empty
-    lines.append('del "%~f0"')
+    data, exe = t["data"], t["exe"]
+    # retry until our process (and the PyInstaller parent) let go of the files
+    lines = ["@echo off", "chcp 65001 >nul", "set n=0", ":retry", "ping -n 2 127.0.0.1 >nul",
+             f'rmdir /s /q "{data}" 2>nul']
+    lines += [f'del /f /q "{f}" 2>nul' for f in [*t["extra"], exe]]
+    lines += ["set /a n+=1",
+              f'if exist "{exe}" if %n% lss 90 goto retry',
+              f'if exist "{data}" if %n% lss 90 goto retry',
+              f'rmdir "{exe.parent}" 2>nul',  # only if now empty
+              'del "%~f0"']
     script.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
     flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
     subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags, close_fds=True)

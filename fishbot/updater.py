@@ -79,10 +79,10 @@ def apply(new_exe: Path, exe: Path, restart: bool) -> None:
     """Hand off to a detached script that swaps the exe after we exit."""
     script = Path(tempfile.gettempdir()) / f"fishbot-update-{os.getpid()}.bat"
     lines = [
-        "@echo off",
-        ":wait",
-        f'tasklist /FI "PID eq {os.getpid()}" 2>nul | find "{os.getpid()}" >nul && (timeout /t 1 /nobreak >nul & goto wait)',
-        f'move /y "{new_exe}" "{exe}" >nul',
+        "@echo off", "chcp 65001 >nul", "set n=0", ":retry", "ping -n 2 127.0.0.1 >nul",
+        f'move /y "{new_exe}" "{exe}" >nul 2>nul',
+        "set /a n+=1",
+        f'if exist "{new_exe}" if %n% lss 90 goto retry',
     ]
     if restart:
         lines.append(f'start "" "{exe}"')

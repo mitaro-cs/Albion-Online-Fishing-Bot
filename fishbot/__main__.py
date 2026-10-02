@@ -47,7 +47,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--uninstall", action="store_true", help="delete the data folder (and the exe) and exit")
     ap.add_argument("--version", action="version", version=__version__)
+    ap.add_argument("--relaunch-test", help=argparse.SUPPRESS)  # CI: restart the way an update does
+    ap.add_argument("--mark", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.mark:
+        Path(args.mark).write_text(__version__, encoding="utf-8")
+        return 0
+    if args.relaunch_test:
+        from .updater import apply
+        exe = Path(sys.executable).resolve()
+        apply(exe.with_name(exe.name + ".none"), exe, True, ("--mark", args.relaunch_test))
+        return 0
 
     store = open_store(args.data)
     if sys.stdout is None or sys.stderr is None:  # windowed exe: no console, log to a file instead

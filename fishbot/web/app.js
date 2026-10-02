@@ -140,7 +140,8 @@ function decimals(step) {
   return Math.min(3, (String(step).split('.')[1] || '').length);
 }
 
-const OFF_AT_ZERO = new Set(['session.max_catches', 'session.max_minutes', 'session.break_every_min']);
+const OFF_AT_ZERO = new Set(['session.max_catches', 'session.max_minutes', 'session.break_every_min',
+  'bait.every_catches', 'bait.every_min']);
 
 function fmt(path, v) {
   const m = meta(path);
@@ -201,10 +202,15 @@ function slider(path) {
   return row(path, h('div', { class: 'slider' }, input, val), 'slide');
 }
 
-function toggle(path) {
-  const el = h('button', { class: 'toggle', type: 'button', role: 'switch', onclick: () => setValue(path, !getPath(path)) });
+function switchEl(path) {
+  const el = h('button', { class: 'toggle', type: 'button', role: 'switch', 'aria-label': t(`f.${path}`),
+    onclick: () => setValue(path, !getPath(path)) });
   bind(path, v => { el.classList.toggle('on', !!v); el.setAttribute('aria-checked', String(!!v)); });
-  return row(path, el, 'check');
+  return el;
+}
+
+function toggle(path) {
+  return row(path, switchEl(path), 'check');
 }
 
 function select(path, options) {
@@ -287,18 +293,31 @@ function buildStatus() {
 function buildSettings() {
   const group = (key, color, ...rows) => h('div', { class: 'group' },
     h('h3', {}, h('span', { class: 'dot', style: `--c: var(--${color})` }), t(key)), rows);
+  // a group that is switched on and off from its title
+  const optional = (key, color, path, ...rows) => {
+    const body = h('div', { class: 'opt-body' }, rows);
+    bind(path, v => body.classList.toggle('off', !v));
+    return h('div', { class: 'group' },
+      h('h3', {}, h('span', { class: 'dot', style: `--c: var(--${color})` }), t(key), h('span', { class: 'grow' }), switchEl(path)),
+      body);
+  };
   const monitors = S.boot.monitors > 1
     ? select('system.monitor', Array.from({ length: S.boot.monitors }, (_, i) => [i + 1, String(i + 1)])) : null;
   return h('div', { class: 'groups' },
     group('g.fish', 'yellow',
       slider('cast.power_ms'),
-      stepper('session.cooldown_ms'),
+      slider('session.cooldown_ms'),
+      stepper('session.cooldown_jitter_ms'),
       stepper('bite.bite_timeout_s'),
       stepper('bite.hook_delay_ms')),
     group('g.bite', 'green',
       toggle('bite.use_sound'),
       stepper('bite.sound_sensitivity'),
       stepper('bite.confirm_ms')),
+    optional('g.bait', 'orange', 'bait.enabled',
+      keyInput('bait.key'),
+      stepper('bait.every_catches'),
+      stepper('bait.every_min')),
     group('g.session', 'blue',
       stepper('session.max_catches'),
       stepper('session.max_minutes'),

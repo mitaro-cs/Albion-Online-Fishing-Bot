@@ -57,6 +57,17 @@ jobs:
           Stop-Process -Name AlbionFishingBot -Force -ErrorAction SilentlyContinue
           if (-not $ok) { Get-Content "$env:RUNNER_TEMP\smoke\fishbot.log" -ErrorAction SilentlyContinue; throw "exe did not serve the UI" }
 
+      - name: Restart after an update starts cleanly
+        shell: pwsh
+        run: |
+          # the update script restarts the exe; it must not pick up the old process's _MEI folder
+          $out = Join-Path $env:RUNNER_TEMP "relaunch.ok"
+          Start-Process dist/AlbionFishingBot.exe -ArgumentList "--relaunch-test","$out"
+          for ($i = 0; $i -lt 45 -and -not (Test-Path $out); $i++) { Start-Sleep 1 }
+          Stop-Process -Name AlbionFishingBot -Force -ErrorAction SilentlyContinue
+          if (-not (Test-Path $out)) { throw "the restarted exe did not start (Python DLL error?)" }
+          Get-Content $out
+
       - name: Storage + uninstall test (registry, nothing left behind)
         shell: pwsh
         run: |

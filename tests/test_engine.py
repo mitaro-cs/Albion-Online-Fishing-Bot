@@ -156,3 +156,79 @@ def test_never_hooks_early_on_nibbles_or_stray_sounds():
     assert rig.game.early == 0
     assert rig.engine.stats.catches == 8
     assert rig.engine.stats.casts <= 9
+
+
+def _fish_until(rig, n, timeout=120):
+    rig.wait(lambda: rig.engine.stats.catches >= n, timeout=timeout)
+
+
+def test_finds_the_bobber_again_after_the_player_moves():
+    """After a restart the player stands elsewhere: the old search area no longer has the bobber."""
+    rig = Rig(seed=21)
+    rig.engine.start()
+    _fish_until(rig, 2)
+    rig.game.spots = [{"x": 1150.0, "y": 430.0, "fish": 10 ** 6, "respawn": 0.0}]
+    rig.cfg.cast.points = [[1150, 430]]
+    rig.engine.configure(rig.cfg, rig.templates)   # old bobber area (650..950, 200..400) is now wrong
+    _fish_until(rig, 5)
+    rig.engine.stop()
+    rig.engine.join(5)
+    assert "relocate" in rig.codes()
+    r = rig.engine._cfg.regions.bobber
+    assert r.left <= 1150 <= r.left + r.width and r.top <= 430 <= r.top + r.height
+
+
+def test_relearns_a_bobber_that_looks_different():
+    rig = Rig(seed=22)
+    rig.engine.start()
+    _fish_until(rig, 2)
+    rig.game.skin = 1  # another float (or night light): the learned picture stops matching
+    _fish_until(rig, 5, timeout=150)
+    rig.engine.stop()
+    rig.engine.join(5)
+    codes = rig.codes()
+    assert "relearn_bobber" in codes and "learn_bobber" in codes
+
+
+def test_uses_bait_at_start_and_when_it_runs_out():
+    rig = Rig(seed=23)
+    rig.cfg.bait.enabled = True
+    rig.cfg.bait.key = "1"
+    rig.cfg.bait.every_catches = 3
+    rig.cfg.bait.every_min = 0
+    rig.cfg.session.max_catches = 7
+    rig.engine.configure(rig.cfg, rig.templates)
+    run_until_stopped(rig)
+    assert rig.inp.keys == ["1", "1", "1"]  # start, after 3 fish, after 6 fish
+    casts = [i for i, e in enumerate(rig.events) if e["code"] == "cast"]
+    baits = [i for i, e in enumerate(rig.events) if e["code"] == "bait"]
+    assert baits[0] < casts[0]  # used before the first cast, with the line in
+
+
+def test_next_cast_follows_the_pause_setting():
+    rig = Rig(seed=24)
+    rig.cfg.session.cooldown_ms = 0
+    rig.cfg.session.cooldown_jitter_ms = 0
+    rig.cfg.session.max_catches = 3
+    rig.engine.configure(rig.cfg, rig.templates)
+    run_until_stopped(rig)
+    gaps = []
+    for i, e in enumerate(rig.events):
+        if e["code"] == "caught":
+            nxt = next((x for x in rig.events[i:] if x["code"] == "cast"), None)
+            if nxt:
+                gaps.append(nxt["t"] - e["t"])
+    assert gaps and max(gaps) < 1.0, gaps  # no hidden wait for the loot banner
+
+
+def test_relearns_the_bar_when_the_minigame_moves():
+    rig = Rig(seed=25)
+    rig.engine.start()
+    _fish_until(rig, 2)
+    rig.game.bar_at = (420, 560)  # another resolution / UI scale: the bar is somewhere else now
+    _fish_until(rig, 5, timeout=150)
+    rig.engine.stop()
+    rig.engine.join(5)
+    codes = rig.codes()
+    assert "relearn_bar" in codes and "learn_bar" in codes
+    assert abs(rig.engine._cfg.regions.reel.left - 420) <= 8

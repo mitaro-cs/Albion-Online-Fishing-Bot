@@ -30,6 +30,7 @@
   --red: #ff5d6c;
   --blue: #5aa8ff;
   --pink: #ff70d6;
+  --orange: #ffa45c;
   --white: #f3f3f4;
   --radius: 18px;
   --ease: cubic-bezier(.2, .8, .2, 1);
@@ -178,11 +179,17 @@ body.running .st-run .primary kbd { background: rgba(255, 255, 255, .08); color:
 
 /* ── settings ──────────────────────────────────────────────────────────── */
 .settings { padding: 14px 16px; }
-.groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 28px; }
+.groups { columns: 3 250px; column-gap: 28px; }
+.group { break-inside: avoid; padding-bottom: 12px; }
+.group h3 .grow { flex: 1; }
+.group h3 .toggle { margin: -4px 0; }
+.opt-body { transition: opacity .3s; }
+.opt-body.off { opacity: .4; }
 .group h3 { margin-bottom: 8px; }
 .group .row { grid-template-columns: minmax(0, 1fr) 118px; }
 .group .row.check { grid-template-columns: minmax(0, 1fr) auto; }
-.group .row.slide { grid-template-columns: minmax(0, 1fr) 136px; }
+.group .row.slide { grid-template-columns: minmax(0, 1fr) 124px; }
+.group .row.slide .slider { grid-template-columns: minmax(0, 1fr) 46px; gap: 6px; }
 .group .note { color: var(--text-4); font-size: 11px; display: flex; align-items: center; gap: 8px; min-height: 30px; }
 
 /* ── live view ─────────────────────────────────────────────────────────── */
@@ -291,11 +298,11 @@ body.running .logo .rod { animation: tug 2.2s var(--ease) infinite; }
 .grid > .card { animation: rise .6s var(--ease) both; }
 .grid > .settings { animation-delay: .07s; } .grid > .vision { animation-delay: .14s; }
 .st-count.bump { animation: bump .6s var(--ease); }
-.st-stage.swap { animation: swap .45s var(--ease); }
+.st-stage.swap { animation: swap .3s var(--ease); }
 
 /* ── window sizes: settings two by two, four in a row on wide screens ──── */
 @media (min-width: 1720px) {
-  .groups { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 22px; }
+  .groups { columns: 5 250px; column-gap: 22px; }
 }
 @media (max-width: 1180px) {
   .grid { grid-template-columns: 270px minmax(0, 1fr); }
@@ -310,6 +317,10 @@ body.running .logo .rod { animation: tug 2.2s var(--ease) infinite; }
   .group h3 { margin-bottom: 5px; }
   .st-count { font-size: 32px; }
   .stat { padding: 6px 9px; }
+}
+@media (max-height: 700px) {
+  .frame .caption { padding: 24px 14px 10px; }
+  .frame .caption p { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

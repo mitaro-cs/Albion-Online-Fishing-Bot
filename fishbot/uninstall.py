@@ -14,6 +14,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .updater import clean_env
+
 
 def run(store) -> dict:
     """Wipe the profiles (registry or folder) now; schedule the files folder and exe for after exit."""
@@ -38,5 +40,5 @@ def run(store) -> dict:
               'del "%~f0"']
     script.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
     flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
-    subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags, close_fds=True)
+    subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags, close_fds=True, env=clean_env())
     return {"scheduled": True, "removed": [str(data), str(exe), "HKCU\\" + "Software\\AlbionFishingBot"]}

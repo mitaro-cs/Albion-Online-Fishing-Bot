@@ -75,7 +75,24 @@ def download(info: dict, dest: Path, progress=None) -> None:
     os.replace(tmp, dest)
 
 
-def apply(new_exe: Path, exe: Path, restart: bool) -> None:
+def clean_env() -> dict:
+    """Environment for a process that outlives us: none of this onefile exe's PyInstaller state.
+
+    A child started with ``_PYI_*`` / ``_MEIPASS2`` set thinks it is part of *this* exe and loads
+    python3xx.dll from our ``_MEI…`` temp folder — which is deleted the moment we exit
+    ("Failed to load Python DLL" after an update).
+    """
+    env = {k: v for k, v in os.environ.items()
+           if not k.upper().startswith(("_PYI_", "_MEIPASS", "TCL_LIBRARY", "TK_LIBRARY"))}
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei:
+        parts = env.get("PATH", "").split(os.pathsep)
+        env["PATH"] = os.pathsep.join(p for p in parts if p and not p.lower().startswith(str(mei).lower()))
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"  # PyInstaller >= 6.9: always start as a fresh app
+    return env
+
+
+def apply(new_exe: Path, exe: Path, restart: bool, args: tuple[str, ...] = ()) -> None:
     """Hand off to a detached script that swaps the exe after we exit."""
     script = Path(tempfile.gettempdir()) / f"fishbot-update-{os.getpid()}.bat"
     lines = [
@@ -85,11 +102,11 @@ def apply(new_exe: Path, exe: Path, restart: bool) -> None:
         f'if exist "{new_exe}" if %n% lss 90 goto retry',
     ]
     if restart:
-        lines.append(f'start "" "{exe}"')
+        lines.append(f'start "" "{exe}"' + "".join(f' "{a}"' for a in args))  # inherits the clean environment given to this script
     lines.append('del "%~f0"')
     script.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
     flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
-    subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags, close_fds=True)
+    subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags, close_fds=True, env=clean_env())
 
 
 class Updater:

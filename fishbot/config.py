@@ -112,9 +112,19 @@ class Action:
 
 
 @dataclass
+class BaitCfg:
+    """Fish bait sits in the potion slot; one use lasts 10 minutes or 10 fish, whichever ends first."""
+    enabled: bool = False
+    key: str = "1"
+    every_catches: int = num(10, 0, 100)
+    every_min: float = num(10.0, 0, 120, 0.5, "min")
+    delay_ms: int = num(700, 0, 5000, 50, "ms")
+
+
+@dataclass
 class SessionCfg:
-    cooldown_ms: int = num(600, 0, 15000, 50, "ms")
-    cooldown_jitter_ms: int = num(300, 0, 10000, 50, "ms")
+    cooldown_ms: int = num(600, 0, 5000, 50, "ms")
+    cooldown_jitter_ms: int = num(300, 0, 3000, 50, "ms")
     max_catches: int = num(0, 0, 100000)
     max_minutes: int = num(0, 0, 1440, 5, "min")
     break_every_min: int = num(0, 0, 600, 5, "min")
@@ -152,6 +162,7 @@ class Config:
     bite: BiteCfg = field(default_factory=BiteCfg)
     reel: ReelCfg = field(default_factory=ReelCfg)
     session: SessionCfg = field(default_factory=SessionCfg)
+    bait: BaitCfg = field(default_factory=BaitCfg)
     system: SystemCfg = field(default_factory=SystemCfg)
     regions: Regions = field(default_factory=Regions)
 

@@ -79,6 +79,9 @@ MESSAGES = {  # English fallback, used by the CLI; the UI translates codes itsel
     "learn_bar_fail": "Couldn't spot the reel bar — retrying on the next fish",
     "learn_hold": "Holding the button moves the marker {way}",
     "learn_sound": "Learned the bite sound",
+    "relocate": "Found the bobber in a new place",
+    "relearn_bobber": "Lost the bobber — learning it again",
+    "bait": "Used bait ({key})",
     "relearn_bar": "The learned reel bar never moves — learning it again",
     "loot": "{name} — {count} total",
     "vision_error": "Calibration problem: {code} {name}",
@@ -122,6 +125,11 @@ class Engine:
         self._bite_t: float | None = None  # when the float went under for the last hooked bite
         self.debug_dir = None  # Path for failure snapshots
         self._escapes = 0
+        self._bobber_misses = 0  # casts in a row where the bobber wasn't seen
+        self._no_bites = 0       # casts in a row without a bite
+        self._loot_due = False
+        self._bait_at: float | None = None
+        self._bait_catches = 0
         self.reel_target = None
         self.catches = CatchLog()
         self._loot_ref = None
@@ -187,6 +195,7 @@ class Engine:
         self.catches.reset()
         self._active_acc, self._active_t0 = 0.0, None
         self._action_last.clear()
+        self._bait_at = None
         self._avoid.clear()
         self._point_index = 0
         self.status = "running"
@@ -312,6 +321,7 @@ class Engine:
                     cfg = self._refresh()
                     self._session_gate(cfg)
                     self._run_actions(cfg)
+                    self._use_bait(cfg)
                     self._cycle(cfg)
                     self._cooldown(cfg)
                 except _Pause:
@@ -386,14 +396,27 @@ class Engine:
 
     def _cycle(self, cfg: Config) -> None:
         self._cast(cfg)
+        learned = self._bobber is not None
         base = self._wait_bobber(cfg)
         if base is None:
+            # the line is most likely out even though we didn't see the float: reel it in, or the
+            # next "cast" click only pulls it back ("Too early!") and fishing goes out of step
+            self._click()
+            self._sleep(0.8)
+            self._bobber_misses += learned
+            if self._bobber_misses >= 2:  # it looks different now (light, skin): learn it again
+                self._forget_bobber()
             return self._fail(cfg, "no_bobber")
+        self._bobber_misses = 0
         waited = self._wait_bite(cfg, base)
         if waited is None:
             self._click()  # reel the empty line in before recasting
             self._sleep(0.8)
+            self._no_bites += 1
+            if self._no_bites >= 3:  # tracking something that never sinks (a rock, a reflection)
+                self._forget_bobber()
             return self._fail(cfg, "no_bite")
+        self._no_bites = 0
         self.stats.bites += 1
         self.stats.bite_sum += waited
         self._emit("bite", s=round(waited, 1))
@@ -412,7 +435,7 @@ class Engine:
             s.best_streak = max(s.best_streak, s.win_streak)
             self._avoid.clear()
             self._emit("caught", "success", s=round(took, 1))
-            self._read_loot()
+            self._loot_due = True  # the banner is looked for during the pause before the next cast
         else:
             if result == "escaped":
                 self.stats.escaped += 1
@@ -471,10 +494,17 @@ class Engine:
             if cfg is None:
                 return None
         b, region = cfg.bite, cfg.regions.bobber
-        deadline = self.clock.now() + b.appear_timeout_s
+        t0 = self.clock.now()
+        deadline = t0 + b.appear_timeout_s
         first = last_seen = None
+        looked_wide = False
         samples: list[Match] = []
         while self.clock.now() < deadline:
+            if first is None and not looked_wide and self.clock.now() - t0 > min(2.5, b.appear_timeout_s / 2):
+                looked_wide = True  # not where it used to land: the player moved or aims elsewhere
+                moved = self._relocate_bobber(cfg)
+                if moved is not None:
+                    region = moved
             t = self.clock.now()
             frame = self._grab(region)
             m = self._bobber.find(frame)
@@ -496,6 +526,52 @@ class Engine:
             self._tick()
             self._pace(t, cfg.system.idle_fps)
         return None
+
+    def _bar_moved(self) -> bool:
+        """Is a reel bar visible somewhere other than the learned area?"""
+        from .learn import find_green_bar
+        mon, old = self._monitor_region(), self._cfg.regions.reel
+        top = mon.top + mon.height // 3
+        band = find_green_bar(self._grab(Region(mon.left, top, mon.width, mon.height - mon.height // 3)))
+        if band is None:
+            return False
+        bx, by, bw, bh = band
+        cx, cy = mon.left + bx + bw / 2, top + by + bh / 2
+        return not (old.left <= cx <= old.left + old.width and old.top - bh <= cy <= old.top + old.height + bh)
+
+    def _wide_area(self, x: int, y: int) -> Region:
+        """The part of the screen a cast aimed at (x, y) can land in."""
+        mon = self._monitor_region()
+        w, h = int(mon.width * 0.6), int(mon.height * 0.55)
+        left = int(min(max(x - w // 2, mon.left), mon.left + mon.width - w))
+        top = int(min(max(y - h // 2, mon.top), mon.top + mon.height - h))
+        return Region(left, top, w, h)
+
+    def _relocate_bobber(self, cfg: Config) -> Region | None:
+        """Look for the known bobber all around the cast point and move the search area there."""
+        if self._target is None or not isinstance(self._bobber, TemplateFinder):
+            return None
+        area = self._wide_area(*self._target)
+        m = self._bobber.find(self._grab(area))
+        if m is None or m.score < cfg.bite.threshold:
+            return None
+        old, mon = cfg.regions.bobber, self._monitor_region()
+        left = int(min(max(area.left + m.x - old.width / 2, mon.left), mon.left + mon.width - old.width))
+        top = int(min(max(area.top + m.y - old.height / 2, mon.top), mon.top + mon.height - old.height))
+        region = Region(left, top, old.width, old.height)
+        self._adopt_cfg({"regions": {"bobber": asdict(region)}})
+        self._emit("relocate")
+        return region
+
+    def _forget_bobber(self) -> None:
+        self._bobber_misses = self._no_bites = 0
+        if not self._cfg.system.auto_learn or self._bobber is None:
+            return
+        self._bobber = None
+        self._emit("relearn_bobber", "warn")
+        with self._lock:
+            self._templates.pop("bobber", None)
+        self._adopt_cfg({"regions": {"bobber": asdict(Region())}}, forget="bobber")
 
     def _wait_bite(self, cfg: Config, base: Match) -> float | None:
         """Hook only when the float has really gone under.
@@ -580,7 +656,7 @@ class Engine:
         finally:
             self.inp.up()
 
-    def _reel(self, cfg: Config) -> tuple[str, float]:
+    def _reel(self, cfg: Config, moved: bool = False) -> tuple[str, float]:
         self._set_stage("reel")
         try:  # the top of the screen without a loot banner, to spot the banner later
             self._loot_ref = (top_area(self._monitor_region()), None)
@@ -638,6 +714,10 @@ class Engine:
                     else:
                         self.inp.up()
                 elif started is None:
+                    if not moved and learned and t - t0 > 1.0 and self._bar_moved():
+                        # the minigame is up, just not where it was (resolution, UI scale): learn it now
+                        self._forget_bar()
+                        return self._reel(self._cfg, moved=True)
                     if t > appear_by:
                         return "no_game", 0.0
                 elif t - last_seen > rc.end_confirm_ms / 1000:
@@ -664,12 +744,12 @@ class Engine:
             self._debug("escaped", frame)
         return outcome, took
 
-    def _read_loot(self) -> None:
+    def _read_loot(self, budget: float) -> None:
         """Find the "you received" banner and tally it (OCR runs off the fishing thread)."""
         if not self._loot_ref or self._loot_ref[1] is None:
             return
         (x, y, w, h), before = self._loot_ref
-        end = self.clock.now() + 2.0
+        end = self.clock.now() + min(2.0, budget)
         while self.clock.now() < end:
             self._sleep(0.15)
             banner = find_banner(before, self._grab(Region(x, y, w, h)))
@@ -738,16 +818,13 @@ class Engine:
         return Region(m["left"], m["top"], m["width"], m["height"])
 
     def _snap_water(self, x: int, y: int):
-        mon = self._monitor_region()
-        w, h = int(mon.width * 0.6), int(mon.height * 0.55)  # the cast can land well past the cursor
-        left = int(min(max(x - w // 2, mon.left), mon.left + mon.width - w))
-        top = int(min(max(y - h // 2, mon.top), mon.top + mon.height - h))
-        region = Region(left, top, w, h)
+        region = self._wide_area(x, y)  # the cast can land well past the cursor
+        left, top = region.left, region.top
         frames = []
         for _ in range(3):
             frames.append(self._grab(region))
             self._sleep(0.06)
-        return region, frames, (x - left, y - top), mon.height / 1080
+        return region, frames, (x - left, y - top), self._monitor_region().height / 1080
 
     def _learn_bobber(self, cfg: Config) -> Config | None:
         region, before, near, scale = self._learn_ref
@@ -800,7 +877,7 @@ class Engine:
                     cv2.rectangle(shot, (bx, top), (bx + bw, by + bh), (99, 230, 245), 2)
                     self._debug("bar-learned", shot)
                     return cfg
-            bar = find_new_bar(before, after)
+            bar = find_new_bar(before, after) if before is not None else None
             if bar is None:
                 continue
             bx, by, bw, bh = bar
@@ -944,7 +1021,32 @@ class Engine:
         s = cfg.session
         dur = (s.cooldown_ms + self.rng.uniform(0, s.cooldown_jitter_ms)) / 1000
         self._set_stage("cooldown", dur)
-        self._sleep(dur)
+        end = self.clock.now() + dur
+        if self._loot_due:  # read the catch banner within the pause, not on top of it
+            self._loot_due = False
+            self._read_loot(max(dur, 0.5))
+        self._sleep(max(0.0, end - self.clock.now()))
+
+    def _use_bait(self, cfg: Config) -> None:
+        """Bait in the potion slot: use it at the start, then again once it runs out."""
+        b = cfg.bait
+        if not b.enabled or not b.key:
+            return
+        now, n = self.clock.now(), self.stats.catches
+        self._bait_catches = min(self._bait_catches, n)  # stats were reset
+        due = (self._bait_at is None
+               or (b.every_catches and n - self._bait_catches >= b.every_catches)
+               or (b.every_min and now - self._bait_at >= b.every_min * 60))
+        if not due:
+            return
+        self._set_stage("bait")
+        self._bait_at, self._bait_catches = now, n
+        try:
+            self.inp.key(b.key)
+            self._emit("bait", key=b.key.upper())
+        except Exception as e:
+            self._emit("action_error", "warn", key=b.key, error=str(e))
+        self._sleep(b.delay_ms / 1000)
 
     def _countdown(self) -> None:
         delay = self._cfg.system.start_delay_s
@@ -1040,7 +1142,7 @@ class Engine:
     def _emit(self, code: str, level: str = "info", **params) -> None:
         with self._lock:
             self._log_id += 1
-            event = {"id": self._log_id, "ts": time.time(), "level": level, "code": code, "params": params}
+            event = {"id": self._log_id, "ts": time.time(), "t": round(self.clock.now(), 3), "level": level, "code": code, "params": params}
             self.logs.append(event)
         logging.getLogger("fishbot.events").info(format_event(event))
         if self.on_event:

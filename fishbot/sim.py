@@ -42,6 +42,8 @@ class SimGame:
         self.x = self.v = self.progress = self.duration = 0.0
         self.fish = (1.0, 1.0, 0.0, 0.0)
         self.caught = self.escaped = 0
+        self.bar_at = (BAR.left, BAR.top)  # where the minigame bar is drawn (UI scale / resolution)
+        self.skin = 0        # 1: a different float look (another rod, night light)
         self.early = 0       # clicks before the fish took the bait ("Too early!" in the game)
         self.nibbles = False  # the float twitches a few times before the real bite
         self.sounds: list[tuple[float, str]] = []  # game sounds: (start, kind)
@@ -226,13 +228,13 @@ class SimGame:
             elif self.state == "floating":
                 s0, s1, depth = self._twitch
                 dip = depth if s0 <= self.t < s1 else 0.0
-                draw_bobber(img, bx, by + 2 * math.sin(self.t * 3.9) + dip)
+                draw_bobber(img, bx, by + 2 * math.sin(self.t * 3.9) + dip, self.skin)
             elif self.state == "biting":
                 for i in range(3):
                     rr = int(8 + 10 * ((age * 1.6 + i / 3) % 1))
                     cv2.ellipse(img, (int(bx), int(by + 6)), (rr, rr // 3), 0, 0, 360, (225, 225, 225), 1, cv2.LINE_AA)
             elif self.state == "reel":
-                draw_bar(img, BAR.left - ox, BAR.top - oy, self.x, self.progress / self.duration,
+                draw_bar(img, self.bar_at[0] - ox, self.bar_at[1] - oy, self.x, self.progress / self.duration,
                          self.zone() if self.green else None)
                 if self.decoy:
                     x0, y0 = 500 - ox, 433 - oy
@@ -246,9 +248,14 @@ class SimGame:
             return img
 
 
-def draw_bobber(img, x: float, y: float) -> None:
+def draw_bobber(img, x: float, y: float, skin: int = 0) -> None:
     x, y = int(round(x)), int(round(y))
     cv2.ellipse(img, (x, y + 3), (9, 3), 0, 0, 360, (60, 40, 20), -1, cv2.LINE_AA)
+    if skin:  # a long yellow quill float instead of the round red one
+        cv2.rectangle(img, (x - 3, y - 14), (x + 3, y + 4), (20, 20, 20), -1)
+        cv2.rectangle(img, (x - 2, y - 13), (x + 2, y - 4), (40, 220, 240), -1)
+        cv2.rectangle(img, (x - 2, y - 4), (x + 2, y + 3), (240, 240, 240), -1)
+        return
     cv2.circle(img, (x, y), 7, (20, 20, 20), -1, cv2.LINE_AA)
     cv2.ellipse(img, (x, y), (6, 6), 0, 180, 360, (60, 60, 230), -1, cv2.LINE_AA)
     cv2.ellipse(img, (x, y), (6, 6), 0, 0, 180, (240, 240, 240), -1, cv2.LINE_AA)

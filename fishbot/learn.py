@@ -35,26 +35,41 @@ def find_new_object(before: list[np.ndarray], after: list[np.ndarray], near: tup
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     n, _, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
     lo, hi = 30 * scale * scale, 6000 * scale * scale
-    best, best_score = None, 0.0
+    found = []
     for i in range(1, n):
         x, y, w, h, area = (int(v) for v in stats[i])
         if not lo <= area <= hi or not 0.25 <= w / max(h, 1) <= 4:
             continue
         strength = float(diff[y:y + h, x:x + w].mean())
         dist = float(np.hypot(cents[i][0] - near[0], cents[i][1] - near[1]))
-        score = strength * np.sqrt(area) / (1 + dist / (220 * scale))
-        if score > best_score:
-            best, best_score = (x, y, w, h), score
-    if best is None:
-        return None
-    x, y, w, h = best
+        found.append((strength * np.sqrt(area) / (1 + dist / (220 * scale)), (x, y, w, h)))
     pad = 3
-    x0, y0 = max(0, x - pad), max(0, y - pad)
-    x1, y1 = min(now.shape[1], x + w + pad), min(now.shape[0], y + h + pad)
-    tpl = now[y0:y1, x0:x1].copy()
-    if tpl.shape[0] < 6 or tpl.shape[1] < 6 or float(_gray(tpl).std()) < 4:
-        return None
-    return tpl, (x0, y0, x1 - x0, y1 - y0)
+    for _, (x, y, w, h) in sorted(found, reverse=True):
+        x0, y0 = max(0, x - pad), max(0, y - pad)
+        x1, y1 = min(now.shape[1], x + w + pad), min(now.shape[0], y + h + pad)
+        tpl = now[y0:y1, x0:x1].copy()
+        if tpl.shape[0] < 6 or tpl.shape[1] < 6 or float(_gray(tpl).std()) < 4:
+            continue
+        old = ref[y0:y1, x0:x1]
+        if float(_gray(old).std()) > float(_gray(tpl).std()) * 1.15:
+            continue  # something vanished here (e.g. the previous float), nothing appeared
+        if _was_there(tpl, ref, (x0, y0, x1 - x0, y1 - y0)):
+            continue  # animated scenery (fish-spot bubbles, glints): it was already there before the cast
+        return tpl, (x0, y0, x1 - x0, y1 - y0)
+    return None
+
+
+def _was_there(tpl: np.ndarray, ref: np.ndarray, box: tuple[int, int, int, int]) -> bool:
+    """Did something that looks like ``tpl`` already sit around ``box`` in the frame before the cast?"""
+    x, y, w, h = box
+    x0, y0 = max(0, x - w), max(0, y - h)
+    x1, y1 = min(ref.shape[1], x + 2 * w), min(ref.shape[0], y + 2 * h)
+    area = _gray(ref[y0:y1, x0:x1]).astype(np.float32)
+    t = _gray(tpl).astype(np.float32)
+    if area.shape[0] < t.shape[0] or area.shape[1] < t.shape[1]:
+        return False
+    res = np.nan_to_num(cv2.matchTemplate(area, t, cv2.TM_CCOEFF_NORMED))
+    return float(res.max()) >= 0.7
 
 
 def find_new_bar(before: np.ndarray, after: np.ndarray) -> tuple[int, int, int, int] | None:

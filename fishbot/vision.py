@@ -181,12 +181,15 @@ class SplashMeter:
     JUMP_S = (0.15, 0.03)  # "just before" window for the jump, seconds back from now
     DECAY = 1.0            # how fast a pixel forgets a bright moment, brightness levels per frame
     INNER, SPREAD, ARM, MARGIN = 0.45, 3, 10, 10
+    SIDE = 0.42
 
     def __init__(self, size: float):
         self.r1 = max(12, int(round(1.35 * size)))
         self.r0 = self.INNER * size
         yy, xx = np.mgrid[-self.r1:self.r1, -self.r1:self.r1]
         self.ring = (np.hypot(xx, yy) > self.r0) & (np.hypot(xx, yy) < self.r1)
+        self._dx, self._dy = xx / self.r1, yy / self.r1
+        self.offset = 0.0  # how far the foam's middle is from the float, in ring radii
         self.calm: list[float] = []
         self.waters: list[float] = []
         self.peak: np.ndarray | None = None
@@ -219,7 +222,9 @@ class SplashMeter:
         bright = vals > water + max(40.0, 0.45 * water)
         if self.peak is not None:
             bright &= vals > self.peak[ring] + self.MARGIN
-        return float(bright.sum()) / float(self.ring.sum())
+        n = int(bright.sum())
+        self.offset = float(np.hypot(self._dx[ring][bright].mean(), self._dy[ring][bright].mean())) if n else 0.0
+        return n / float(self.ring.sum())
 
     def threshold(self) -> float | None:
         """Share that counts as a splash, from the calm so far (None until enough is known)."""
@@ -238,6 +243,8 @@ class SplashMeter:
         else:
             foam = (limit is not None and share > limit and bool(before)
                     and share - min(before) > max(0.03, 0.5 * limit))
+        # a bite's foam surrounds the float; foam off to one side is a neighbour's float or a fish school
+        foam = foam and self.offset <= self.SIDE
         self.active = foam
         if not foam:
             self.calm.append(share)

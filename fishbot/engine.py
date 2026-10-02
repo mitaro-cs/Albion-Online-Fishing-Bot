@@ -144,6 +144,7 @@ class Engine:
         self._reaim = False
         self._landings: deque[tuple[float, float]] = deque(maxlen=7)  # where real floats landed, from the aim
         self._landed_at: tuple[float, float] | None = None  # this cast's float, screen coordinates
+        self._last_float: tuple[float, float] | None = None  # where the last fish was pulled out
         self._last_try = True
         self._float_known = False   # announced "learned the float" once this session
 
@@ -466,6 +467,7 @@ class Engine:
         result, took = self._reel(cfg)
         if result != "no_game":
             self._learn_sound()
+            self._last_float = self._landed_at  # its foam lingers a moment where it was pulled out
             if self._landed_at and self._target:  # a real bite: that was our float
                 self._landings.append((self._landed_at[0] - self._target[0], self._landed_at[1] - self._target[1]))
         if result == "caught":
@@ -934,7 +936,32 @@ class Engine:
         m = mons[1] if len(mons) > 1 else mons[0]
         return Region(m["left"], m["top"], m["width"], m["height"])
 
+    def _wait_calm(self) -> None:
+        """After a fish: let the foam where it was pulled out settle before looking at the water.
+
+        The next float often lands right there; foam fading during the look before the cast would
+        make the float look like part of what the water does on its own, and it would go unseen.
+        """
+        if self._last_float is None:
+            return
+        x, y = self._last_float
+        r = int(45 * self._monitor_region().height / 1080)
+        area = Region(int(x) - r, int(y) - r, 2 * r, 2 * r)
+        end = self.clock.now() + 2.5
+        prev, steady = None, 0
+        while self.clock.now() < end:
+            v = self._grab(area).max(axis=2)
+            foam = float((v > np.median(v) + 45).mean())
+            # settled: no foam, or no longer fading (a fishing spot's bubbles are always there)
+            steady = steady + 1 if prev is not None and abs(foam - prev) < 0.004 else 0
+            if foam < 0.01 or steady >= 2:
+                break
+            prev = foam
+            self._sleep(0.12)
+        self._last_float = None
+
     def _snap_water(self, x: int, y: int):
+        self._wait_calm()
         region = self._wide_area(x, y)  # the cast can land well past the cursor
         left, top = region.left, region.top
         if self._landings:  # it lands about where it landed before: look there first (not at a neighbour's)

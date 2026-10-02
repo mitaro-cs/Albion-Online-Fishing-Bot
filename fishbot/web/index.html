@@ -4,117 +4,50 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Albion Fishing Bot</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230d0d0f'/%3E%3Cellipse cx='16' cy='16' rx='10' ry='6.5' transform='rotate(-28 16 16)' fill='none' stroke='%23fff' stroke-width='3'/%3E%3Ccircle cx='9.5' cy='21' r='2.6' fill='%23f1e65b'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230d0d0f'/%3E%3Cpath d='M6 27Q13 15 24 7' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M24 7v12' stroke='%23fff' stroke-width='1'/%3E%3Ccircle cx='24' cy='21' r='2.6' fill='%23ff5d6c'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div id="canvas">
-    <div class="glow g1"></div>
-    <div class="glow g2"></div>
-    <div class="glow g3"></div>
-  </div>
-  <main id="world">
-    <svg id="wires">
-      <defs>
-        <linearGradient id="wire-grad" x1="0" x2="1" y1="0" y2="0">
-          <stop offset="0" stop-color="#ffffff" stop-opacity=".25"/>
-          <stop offset=".5" stop-color="#ffffff" stop-opacity=".9"/>
-          <stop offset="1" stop-color="#ffffff" stop-opacity=".25"/>
-        </linearGradient>
-      </defs>
-      <g id="wire-paths"></g>
-    </svg>
-    <div id="nodes"></div>
-    <div class="bot-cursor off" id="bot">
-      <svg viewBox="0 0 16 16"><path d="M1.5 1.5l5.2 13 1.9-5.4 5.4-1.9z"/></svg>
-      <span class="tag"></span>
-    </div>
-  </main>
-
-  <header class="topbar">
-    <div class="cluster l">
-      <div class="logo" aria-hidden="true">
-        <svg viewBox="0 0 32 32">
-          <ellipse class="ripple" cx="25" cy="23.3" rx="3.6" ry="1"/>
-          <ellipse class="ripple r2" cx="25" cy="23.3" rx="3.6" ry="1"/>
-          <g class="rod">
-            <path class="pole" d="M3.5 29 Q12 14 25 4.5"/>
-            <path class="grip" d="M3.5 29 L7.6 22.6"/>
-            <circle class="reel" cx="9" cy="23.4" r="1.9"/>
-            <g class="tackle">
-            <line class="fline" x1="25" y1="4.5" x2="25" y2="20.6"/>
-            <g class="bob"><path class="bob-top" d="M22.6 22.4a2.4 2.4 0 0 1 4.8 0z"/><path class="bob-bot" d="M22.6 22.4a2.4 2.4 0 0 0 4.8 0z"/></g>
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32">
+            <ellipse class="ripple" cx="25" cy="23.3" rx="3.6" ry="1"/>
+            <ellipse class="ripple r2" cx="25" cy="23.3" rx="3.6" ry="1"/>
+            <g class="rod">
+              <path class="pole" d="M3.5 29 Q12 14 25 4.5"/>
+              <path class="grip" d="M3.5 29 L7.6 22.6"/>
+              <circle class="reel" cx="9" cy="23.4" r="1.9"/>
+              <g class="tackle">
+                <line class="fline" x1="25" y1="4.5" x2="25" y2="20.6"/>
+                <g class="bob"><path class="bob-top" d="M22.6 22.4a2.4 2.4 0 0 1 4.8 0z"/><path class="bob-bot" d="M22.6 22.4a2.4 2.4 0 0 0 4.8 0z"/></g>
+              </g>
             </g>
-          </g>
-        </svg>
+          </svg>
+        </div>
+        <div class="name"><b>Albion Fishing Bot</b><span>v<span id="version"></span><span class="demo" id="demo-tag" data-t="demo" hidden></span></span></div>
       </div>
-      <button class="btn menu-btn" data-menu="workflow" data-t="menu.workflow"></button>
-      <button class="btn menu-btn" data-action="calibrate" data-t="menu.calibrate"></button>
-      <button class="btn menu-btn" data-menu="help" data-t="menu.help"></button>
-    </div>
-    <div class="tabs">
-      <button class="btn icon" id="prev-profile" data-tip="tip.prev"><i data-i="chevL"></i></button>
-      <button class="btn profile-tab" id="profile-tab"><span id="profile-name"></span><i class="x" data-i="chevD"></i></button>
-      <button class="btn icon" id="next-profile" data-tip="tip.next"><i data-i="chevR"></i></button>
-    </div>
-    <div class="cluster r">
-      <button class="btn icon" data-menu="more" data-tip="tip.more"><i data-i="more"></i></button>
-      <button class="btn" id="run"><i data-i="play"></i><span class="lbl"></span><kbd id="kbd-toggle">F8</kbd></button>
-      <button class="btn icon" id="stop" data-tip="tip.stop"><i data-i="x"></i></button>
-      <button class="btn icon" id="reset-stats" data-tip="tip.reset_stats"><i data-i="refresh"></i></button>
-      <button class="btn icon" id="toggle-dock" data-tip="tip.dock"><i data-i="menu"></i></button>
-    </div>
-  </header>
+      <div class="loot" id="loot" hidden></div>
+      <div class="top-r">
+        <button class="update-chip" id="update-chip" hidden></button>
+        <button class="btn sm" id="lang"></button>
+      </div>
+    </header>
 
-  <div class="subbar">
-    <div class="cluster l">
-      <div class="status-chip">
-        <div class="eq"><span></span><span></span><span></span></div>
-        <span class="stage" id="stage"></span><span class="remain" id="remain"></span>
-        <span class="count" id="count">0</span>
-      </div>
-      <button class="update-chip" id="update-chip" hidden></button>
-    </div>
-    <div class="subtitle"><span data-t="subtitle"></span> v<span id="version"></span><span class="demo" id="demo-tag" data-t="demo" hidden></span></div>
-    <div class="loot" id="loot" hidden></div>
-    <div class="cluster r">
-      <div class="seg">
-        <button data-action="mode" data-mode="simple" data-t="mode.simple"></button>
-        <button data-action="mode" data-mode="advanced" data-t="mode.advanced"></button>
-      </div>
-      <button class="btn primary adv-only" data-action="calibrate"><i data-i="camera"></i><span data-t="btn.calibrate"></span></button>
-      <button class="btn adv-only" data-action="check"><i data-i="checkCircle"></i><span data-t="btn.check"></span></button>
-    </div>
+    <main class="grid">
+      <section class="card status" id="status"></section>
+      <section class="card settings" id="settings"></section>
+      <section class="card vision" id="vision"></section>
+    </main>
+
+    <footer class="foot">
+      <a class="credit" href="https://github.com/mitaro-cs" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span data-t="credit"></span> <b>mitaro-cs</b> <span>and</span> <b>pulsar</b>
+      </a>
+    </footer>
   </div>
-
-
-  <div class="corner l" id="corner-l"></div>
-  <div class="corner r" id="corner-r"></div>
-
-  <footer class="dock">
-    <div class="logcard" id="logcard">
-      <div class="k" data-t="tab.log"></div>
-      <div class="line prev" id="log-prev"></div>
-      <div class="line" id="log-last"></div>
-    </div>
-    <div class="dock-tabs">
-      <button class="tb" data-panel="log" data-tip="tab.log"><i data-i="history"></i></button>
-      <button class="tb" data-panel="session" data-tip="node.session"><i data-i="calendar"></i></button>
-      <button class="tb" data-panel="stats" data-tip="tab.stats"><i data-i="chart"></i></button>
-      <button class="tb" data-panel="templates" data-tip="tab.templates"><i data-i="cube"></i></button>
-      <button class="tb" data-panel="profiles" data-tip="tab.profiles"><i data-i="folder"></i></button>
-      <span class="grow"></span>
-      <span class="vr"></span>
-      <button class="tb lang" id="lang"></button>
-      <button class="tb" data-panel="settings" data-tip="tab.settings"><i data-i="gear"></i></button>
-    </div>
-  </footer>
-
-  <a class="credit" href="https://github.com/mitaro-cs" target="_blank" rel="noopener">
-    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-    <span data-t="credit"></span> <b>mitaro-cs</b> <span>and</span> <b>pulsar</b>
-  </a>
-  <div class="panel" id="panel"></div>
   <div class="toasts" id="toasts"></div>
   <script type="module" src="app.js"></script>
 </body>

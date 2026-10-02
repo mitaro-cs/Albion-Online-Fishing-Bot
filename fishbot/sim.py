@@ -14,6 +14,7 @@ import threading
 import cv2
 import numpy as np
 
+from .audio import SoundSource
 from .capture import Screen
 from .config import Config, ProfileStore, Region
 from .controls import Input
@@ -41,6 +42,12 @@ class SimGame:
         self.x = self.v = self.progress = self.duration = 0.0
         self.fish = (1.0, 1.0, 0.0, 0.0)
         self.caught = self.escaped = 0
+        self.early = 0       # clicks before the fish took the bait ("Too early!" in the game)
+        self.nibbles = False  # the float twitches a few times before the real bite
+        self.sounds: list[tuple[float, str]] = []  # game sounds: (start, kind)
+        self.ambient = 0.0   # mean seconds between unrelated game sounds (frogs, music); 0 = none
+        self._next_ambient = 0.0
+        self._twitch = (0.0, 0.0, 0.0)  # (start, end, depth px)
         self.invert = False  # True: holding pushes the marker left
         self.green = True    # the marker must be kept inside a moving green zone
         self.decoy = False   # a static UI panel ("A" key hint) that pops up with the minigame
@@ -88,6 +95,8 @@ class SimGame:
             if self.state == "idle":
                 self._set("charging")
             elif self.state == "floating":
+                if self.spot_index is not None and self.t < self.bite_at:
+                    self.early += 1          # "Too early!"
                 self._set("idle")            # reeled the empty line in
             elif self.state == "biting":
                 self._start_reel()
@@ -136,12 +145,22 @@ class SimGame:
         for s in self.spots:
             if s["fish"] <= 0 and t >= s["respawn"]:
                 s.update(self._new_spot())
+        if self.ambient and t >= self._next_ambient:
+            if self._next_ambient:
+                self.sounds.append((t, self.rng.choice(("croak", "chime"))))
+            self._next_ambient = t + self.rng.expovariate(1 / self.ambient)
         if self.state == "flying" and age > 0.7:
             self.spot_index = self._spot_at(self.bobber)
             self.bite_at = t + self.rng.uniform(2.0, 7.0)
+            self.sounds.append((t, "land"))  # the float lands with a splash
             self._set("floating")
         elif self.state == "floating" and self.spot_index is not None and t >= self.bite_at:
+            self.sounds.append((t, "bite"))
             self._set("biting")
+        elif self.state == "floating" and self.nibbles and t > self._twitch[1] + 0.6 and self.rng.random() < dt * 0.8:
+            # a nibble: the float jerks down a little and pops back, with a soft plop
+            self._twitch = (t, t + self.rng.uniform(0.1, 0.3), self.rng.uniform(4.0, 8.0))
+            self.sounds.append((t, "nibble"))
         elif self.state == "biting" and age > 1.2:
             self._set("idle")
         elif self.state == "reel":
@@ -205,7 +224,9 @@ class SimGame:
                 cv2.circle(img, (int(sx + (bx - sx) * f), int(sy + (by - sy) * f - 120 * math.sin(math.pi * f))),
                            5, (235, 235, 235), -1, cv2.LINE_AA)
             elif self.state == "floating":
-                draw_bobber(img, bx, by + 2 * math.sin(self.t * 3.9))
+                s0, s1, depth = self._twitch
+                dip = depth if s0 <= self.t < s1 else 0.0
+                draw_bobber(img, bx, by + 2 * math.sin(self.t * 3.9) + dip)
             elif self.state == "biting":
                 for i in range(3):
                     rr = int(8 + 10 * ((age * 1.6 + i / 3) % 1))
@@ -299,6 +320,46 @@ class SimScreen(Screen):
     def monitors(self) -> list[dict]:
         mon = {"left": 0, "top": 0, "width": W, "height": H}
         return [mon, dict(mon)]
+
+
+def sound_level(kind: str, dt: float) -> float:
+    """Loudness envelope of each simulated game sound, ``dt`` seconds after it starts."""
+    if dt < 0 or dt > 1.2:
+        return 0.0
+    if kind == "bite":     # sharp splash, then the slosh of the float being dragged under
+        return 0.9 * math.exp(-dt / 0.08) + 0.5 * math.exp(-((dt - 0.22) / 0.05) ** 2)
+    if kind == "nibble":   # soft short plop
+        return 0.35 * math.exp(-dt / 0.04)
+    if kind == "land":
+        return 0.7 * math.exp(-dt / 0.25)
+    if kind == "croak":    # frog: two quick croaks
+        return 0.6 * (math.exp(-((dt - 0.05) / 0.035) ** 2) + math.exp(-((dt - 0.19) / 0.035) ** 2))
+    return 0.5 * min(1.0, dt / 0.12) * math.exp(-max(0.0, dt - 0.12) / 0.3)  # chime / music swell
+
+
+class SimAudio(SoundSource):
+    """The game's sound meter for the simulator: renders the sounds it played, 100 times a second."""
+
+    ok = True
+
+    def __init__(self, game: SimGame):
+        super().__init__()
+        self.game = game
+        self._at = game.clock.now()
+        self._k = 0
+
+    def now(self) -> float:
+        return self.game.clock.now()
+
+    def _sync(self) -> None:
+        self.game.advance()
+        end = self.now()
+        while self._at < end:
+            self._at += 0.01
+            self._k += 1
+            noise = 0.004 * ((self._k * 7919) % 13) / 13
+            level = 0.02 + noise + sum(sound_level(k, self._at - t0) for t0, k in self.game.sounds[-12:])
+            self._push(self._at, level)
 
 
 class SimInput(Input):

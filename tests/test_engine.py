@@ -86,18 +86,20 @@ def test_auto_pause_on_focus_loss():
     rig.engine.join(5)
 
 
-def test_rotates_points_and_stops_after_fail_streak():
+def test_rotates_points_and_keeps_fishing_after_misses():
     rig = Rig()
     rig.game.spots = [{"x": 800.0, "y": 300.0, "fish": 0, "respawn": 1e12}]  # empty water: never bites
     rig.cfg.cast.points = [[760, 280], [840, 320]]
     rig.cfg.cast.rotate_after = 1
     rig.cfg.bite.bite_timeout_s = 5
-    rig.cfg.session.max_fail_streak = 4
     rig.engine.configure(rig.cfg, rig.templates)
-    run_until_stopped(rig)
+    rig.engine.start()
+    rig.wait(lambda: rig.engine.stats.fail_streak >= 15)
+    assert rig.engine.running  # misses never stop the loop
+    rig.engine.stop()
+    rig.engine.join(5)
     codes = rig.codes()
-    assert codes.count("rotate") >= 3
-    assert "fail_streak" in codes
+    assert codes.count("rotate") >= 10
     targets = {(e["params"]["x"] // 40, e["params"]["y"] // 40) for e in rig.events if e["code"] == "cast"}
     assert len(targets) >= 2  # really alternated between the two points
 
@@ -139,3 +141,18 @@ def test_quick_stop_then_start_restarts(rig):
     rig.engine.stop()
     rig.engine.join(5)
     assert not rig.inp.held
+
+
+def test_never_hooks_early_on_nibbles_or_stray_sounds():
+    """The float twitches before the bite and the game plays unrelated sounds: neither may hook."""
+    from fishbot.sim import SimAudio
+    rig = Rig(seed=7)
+    rig.game.nibbles = True
+    rig.game.ambient = 1.5
+    rig.engine.audio = SimAudio(rig.game)
+    rig.cfg.session.max_catches = 8
+    rig.engine.configure(rig.cfg, rig.templates)
+    run_until_stopped(rig, timeout=120)
+    assert rig.game.early == 0
+    assert rig.engine.stats.catches == 8
+    assert rig.engine.stats.casts <= 9

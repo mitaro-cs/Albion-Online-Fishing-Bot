@@ -240,7 +240,7 @@ class Api:
             "templates": self._thumbs(),
             "ui": self._store.settings().get("ui", {}),
             "hotkeys": self._hotkeys.ok,
-            "sound": self._audio.ok,
+            "sound": self._sound_ok(),
             "monitors": len(self._screen.monitors()) - 1,
             "data_dir": str(self._store.root.resolve()),
         }
@@ -263,7 +263,11 @@ class Api:
 
     @endpoint
     def state(self, since: int = 0):
-        return {**self._engine.snapshot(int(since)), "cfg_rev": getattr(self, "_rev", 0)}
+        return {**self._engine.snapshot(int(since)), "cfg_rev": getattr(self, "_rev", 0), "sound": self._sound_ok()}
+
+    def _sound_ok(self) -> bool:
+        audio = self._engine.audio
+        return bool(audio is not None and audio.ok)
 
     @endpoint
     def start(self):
@@ -502,6 +506,13 @@ class Api:
         self._profile = self._store.list()[0]
         self._load()
         return self._bootstrap()
+
+    @endpoint
+    def forget_sound(self):
+        """Learn the bite sound again (e.g. it was learned from the wrong sound)."""
+        with self._lock:
+            self._commit(self._cfg.merged({"bite": {"sound_prints": []}}))
+            return {"config": self._cfg.to_dict()}
 
     @endpoint
     def save_ui(self, prefs: dict):

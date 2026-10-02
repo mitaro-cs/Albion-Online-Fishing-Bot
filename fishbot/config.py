@@ -68,13 +68,14 @@ class BiteCfg:
     threshold: float = num(0.7, 0.3, 0.99, 0.01)
     settle_ms: int = num(1200, 0, 5000, 50, "ms")
     dip_px: int = num(6, 1, 60, 1, "px")
-    confirm_frames: int = num(2, 1, 10)
+    confirm_ms: int = num(200, 0, 2000, 10, "ms")
     appear_timeout_s: float = num(6.0, 1, 30, 0.5, "s")
     bite_timeout_s: float = num(35.0, 5, 180, 1, "s")
-    hook_delay_ms: int = num(140, 0, 1500, 10, "ms")
-    hook_jitter_ms: int = num(80, 0, 1000, 10, "ms")
+    hook_delay_ms: int = num(60, 0, 1500, 10, "ms")
+    hook_jitter_ms: int = num(60, 0, 1000, 10, "ms")
     use_sound: bool = True
     sound_sensitivity: float = num(4.0, 1.5, 20.0, 0.5)
+    sound_prints: list = field(default_factory=list, metadata={"kind": "prints"})  # learned bite sounds
     grayscale: bool = True
     hsv_lo: list = hsv(0, 120, 120)
     hsv_hi: list = hsv(10, 255, 255)
@@ -118,7 +119,6 @@ class SessionCfg:
     max_minutes: int = num(0, 0, 1440, 5, "min")
     break_every_min: int = num(0, 0, 600, 5, "min")
     break_minutes: float = num(3.0, 0.5, 120, 0.5, "min")
-    max_fail_streak: int = num(12, 2, 200)
     actions: list = field(default_factory=list, metadata={"item": Action, "limit": 8})
 
 
@@ -202,6 +202,11 @@ def _coerce(value: Any, default: Any, meta) -> Any:
             if isinstance(p, (list, tuple)) and len(p) == 2:
                 pts.append([int(round(float(p[0]))), int(round(float(p[1])))])
         return pts
+    if kind == "prints":
+        if not isinstance(value, list):
+            raise ValueError
+        return [[min(max(float(v), 0.0), 1.0) for v in p[:64]] for p in value[-5:]
+                if isinstance(p, list) and all(isinstance(v, (int, float)) for v in p)]
     if "item" in meta:
         if not isinstance(value, list):
             raise ValueError

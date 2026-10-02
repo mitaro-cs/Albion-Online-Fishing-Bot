@@ -24,32 +24,48 @@ def test_music_swell_is_not_a_bite():
         assert not det.feed(amp * np.sin(2 * np.pi * 110 * (t + i * 0.02)), i * 0.02)
 
 
-class SimAudio:
-    """Plays a 'splash' when the simulated fish bites."""
-
-    def __init__(self, game, clock):
-        self.game, self.clock = game, clock
-
-    def now(self):
-        return self.clock.now()
-
-    def onset_after(self, t):
-        self.game.advance()
-        return self.game.state == "biting" and self.game.state_t > t
-
-
-def test_engine_hooks_on_the_sound():
+def test_engine_learns_the_bite_sound_and_uses_it():
+    from fishbot.sim import SimAudio
     rig = Rig(seed=3)
-    rig.engine.audio = SimAudio(rig.game, rig.clock)
-    rig.cfg.session.max_catches = 3
+    rig.game.ambient = 2.0
+    rig.engine.audio = SimAudio(rig.game)
+    rig.cfg.session.max_catches = 6
     rig.engine.configure(rig.cfg, rig.templates)
+    learned = []
+    rig.engine.on_learn = lambda name, tpl, patch: learned.append(patch)
     triggers = []
     orig = rig.engine._hook
     rig.engine._hook = lambda cfg: (triggers.append(rig.engine.last_trigger), orig(cfg))
     rig.engine.start()
-    rig.engine.join(90)
-    assert rig.engine.stats.catches == 3
-    assert triggers and all(t == "sound" for t in triggers)
+    rig.engine.join(120)
+    assert rig.engine.stats.catches == 6 and rig.game.early == 0
+    prints = rig.engine._cfg.bite.sound_prints
+    assert len(prints) >= 2 and "learn_sound" in rig.codes()
+    assert any("sound_prints" in p.get("bite", {}) for p in learned)  # handed over to be saved
+    assert triggers[:2] != ["sound", "sound"]   # not trusted before it is learned
+    assert "sound" in triggers[2:]               # then it helps
+
+
+def test_bite_print_rejects_other_game_sounds():
+    from fishbot.audio import MATCH, bite_print, similarity
+    from fishbot.sim import SimAudio
+    rig = Rig(seed=4)
+    audio = SimAudio(rig.game)
+    t = rig.clock.now() + 1.0
+    plan = [(t + i, k) for i, k in enumerate(["bite", "croak", "bite", "chime", "nibble", "bite", "land"])]
+    rig.game.sounds.extend(plan)
+    rig.clock.t = t + len(plan) + 1
+    audio._sync()
+    prints = []
+    for at, kind in plan:
+        if kind == "bite":
+            prints = audio.remember(at, prints)
+    ref = bite_print(prints)
+    assert ref is not None and len(prints) == 3
+    for at, kind in plan:
+        onset = min(audio.detector.onsets, key=lambda o: abs(o - at))
+        score = similarity(audio.envelope(onset, full=True)[0], ref)
+        assert (score >= MATCH) == (kind == "bite"), (kind, score)
 
 
 def test_peak_meter_onset():

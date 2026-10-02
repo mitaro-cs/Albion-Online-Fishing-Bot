@@ -61,7 +61,6 @@ MESSAGES = {  # English fallback, used by the CLI; the UI translates codes itsel
     "rotate": "Switching fishing spot",
     "spot": "Fishing spot found (score {score})",
     "spot_none": "No fishing spot visible",
-    "fail_streak": "Too many misses in a row ({n}) — stopping",
     "limit_catches": "Catch limit reached ({n})",
     "limit_time": "Session time limit reached ({n} min)",
     "break": "Taking a break for {min} min",
@@ -79,6 +78,7 @@ MESSAGES = {  # English fallback, used by the CLI; the UI translates codes itsel
     "learn_bar": "Learned the reel bar ({w} px) and marker",
     "learn_bar_fail": "Couldn't spot the reel bar — retrying on the next fish",
     "learn_hold": "Holding the button moves the marker {way}",
+    "learn_sound": "Learned the bite sound",
     "relearn_bar": "The learned reel bar never moves — learning it again",
     "loot": "{name} — {count} total",
     "vision_error": "Calibration problem: {code} {name}",
@@ -119,6 +119,7 @@ class Engine:
         self.on_event = on_event
         self.on_learn = None
         self.audio = None  # AudioWatcher (or a stand-in in tests)
+        self._bite_t: float | None = None  # when the float went under for the last hooked bite
         self.debug_dir = None  # Path for failure snapshots
         self._escapes = 0
         self.reel_target = None
@@ -398,6 +399,8 @@ class Engine:
         self._emit("bite", s=round(waited, 1))
         self._hook(cfg)
         result, took = self._reel(cfg)
+        if result != "no_game":
+            self._learn_sound()
         if result == "caught":
             s = self.stats
             s.catches += 1
@@ -495,25 +498,38 @@ class Engine:
         return None
 
     def _wait_bite(self, cfg: Config, base: Match) -> float | None:
-        """React to the bite itself: any of score drop, dip, vanish or a splash of motion."""
+        """Hook only when the float has really gone under.
+
+        It must stay under (gone, or pulled well below its usual bobbing) for ``confirm_ms``.
+        A splash right around it, or the learned bite sound at that moment, halves the wait;
+        the bite sound also counts a shallower pull as "under". Waves, nibbles, fish swimming
+        by, music and other game sounds on their own never hook — in the game a click before
+        the bite is "Too early!" and costs the cast.
+        """
         cfg = self._cfg  # may hold a freshly learned bobber area
         self._set_stage("bite", cfg.bite.bite_timeout_s)
         b, region = cfg.bite, cfg.regions.bobber
         t0 = self.clock.now()
-        deadline = t0 + b.bite_timeout_s
-        streak, by, score_ref = 0, base.y, base.score
+        deadline, calm_until = t0 + b.bite_timeout_s, t0 + 1.0  # landing ripples first
+        bx, by, score_ref = base.x, base.y, base.score
+        ys: deque[float] = deque(maxlen=90)
         energies: deque[float] = deque(maxlen=45)
         prev = None
+        under_since: float | None = None
         audio = self.audio if b.use_sound else None
-        heard_after = (audio.now() + 1.0) if audio else 0.0  # ignore the landing splash
+        self._bite_t = None
         while self.clock.now() < deadline:
             t = self.clock.now()
             frame = self._grab(region)
             m = self._bobber.find(frame)
             present = self._present(m, b)
-            lost = not present or (b.method == "color" and m.area < base.area * 0.35)
-            dip = present and (m.y - by) >= b.dip_px
-            drop = present and b.method == "template" and m.score < score_ref - 0.22
+            # the best match jumping somewhere else means the float itself is no longer there
+            away = present and (abs(m.x - bx) > max(base.w, 12) or abs(m.y - by) > 2.5 * base.h)
+            gone = (not present or away or (b.method == "color" and m.area < base.area * 0.35)
+                    or (b.method == "template" and m.score < score_ref - 0.25))
+            swing = (max(ys) - min(ys)) if len(ys) >= 15 else 0.0
+            deep = max(b.dip_px, 0.6 * base.h, 1.5 * swing)  # well past the normal bobbing
+            sink = (m.y - by) if present and not away else 0.0
             # splash: sudden motion right around the bobber compared to the usual waves
             x0, y0 = int(max(0, base.x - 2.5 * base.w)), int(max(0, base.y - 2.5 * base.h))
             x1, y1 = int(base.x + 2.5 * base.w), int(base.y + 2.5 * base.h)
@@ -528,19 +544,23 @@ class Engine:
                 if not splash:
                     energies.append(e)
             prev = patch
-            if audio is not None and audio.onset_after(heard_after):
-                self.last_trigger = "sound"  # the bite splash is audible before it's visible
-                return self.clock.now() - t0
-            if lost or dip or drop or splash:
-                streak += 1
+            heard = audio is not None and t >= calm_until and audio.bite_heard(t - 0.6, b.sound_prints)
+            under = t >= calm_until and (gone or sink >= deep or (heard and sink >= b.dip_px))
+            if under:
+                under_since = under_since or t
             else:
-                streak = 0
-                by = 0.92 * by + 0.08 * m.y  # follow slow drift with the waves
-                score_ref = 0.95 * score_ref + 0.05 * m.score
-            self._show(frame, "bobber", lambda img: self._draw_bite(img, m, base, by, streak > 0))
-            if streak >= b.confirm_frames:
-                self.last_trigger = "lost" if lost else "dip" if dip else "drop" if drop else "splash"
-                return self.clock.now() - t0
+                under_since = None
+                if present and not gone:
+                    ys.append(m.y)
+                    bx = 0.92 * bx + 0.08 * m.x  # follow slow drift with the waves
+                    by = 0.92 * by + 0.08 * m.y
+                    score_ref = 0.95 * score_ref + 0.05 * m.score
+            need = b.confirm_ms / 1000 * (0.5 if heard or splash else 1.0)
+            self._show(frame, "bobber", lambda img: self._draw_bite(img, m, base, by, under))
+            if under_since is not None and t - under_since >= need:
+                self.last_trigger = "sound" if heard else "lost" if gone else "dip"
+                self._bite_t = under_since
+                return t - t0
             self._tick()
             self._pace(t, cfg.system.idle_fps)
         return None
@@ -666,6 +686,18 @@ class Engine:
             self._emit("loot", "success", name=item["name"] or "?", count=item["count"])
         except Exception:
             traceback.print_exc()
+
+    def _learn_sound(self) -> None:
+        """The minigame showed up, so that was a real bite: remember what it sounded like."""
+        cfg = self._cfg
+        if self.audio is None or self._bite_t is None or not cfg.bite.use_sound or not cfg.system.auto_learn:
+            return
+        prints = self.audio.remember(self._bite_t, cfg.bite.sound_prints)
+        if prints is not None:
+            first = len(cfg.bite.sound_prints) < 2 <= len(prints)
+            self._adopt_cfg({"bite": {"sound_prints": prints}})
+            if first:
+                self._emit("learn_sound", "success")
 
     def _probe_hold(self, region, rc, span: float, mw: int) -> str:
         """Release, then hold, and compare how the marker accelerates (velocity alone is fooled by inertia)."""
@@ -867,9 +899,6 @@ class Engine:
             if self._target:
                 self._avoid.append((*self._target, self.clock.now()))
             self._emit("rotate")
-        if s.fail_streak >= cfg.session.max_fail_streak:
-            self._emit("fail_streak", "error", n=s.fail_streak)
-            raise _Stop
 
     def _session_gate(self, cfg: Config) -> None:
         s = cfg.session

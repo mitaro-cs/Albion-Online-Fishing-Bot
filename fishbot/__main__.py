@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.demo:
         from .sim import SimGame, SimInput, SimScreen, prepare_profile
         game = SimGame()
+        game.nibbles, game.ambient = True, 4.0  # nibbles and stray game sounds, like the real thing
         screen, inp, focus = SimScreen(game), SimInput(game), None
         profile = args.profile or prepare_profile(store)
     else:
@@ -75,6 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         screen, inp, focus, profile = MssScreen(), system_input(), foreground_title, args.profile
 
     api = Api(store, screen, inp, demo=args.demo, focus=focus, profile=profile, audio=not args.demo)
+    if args.demo:
+        from .sim import SimAudio
+        api.engine.audio = SimAudio(game)
     try:
         if args.cli:
             return run_cli(api)

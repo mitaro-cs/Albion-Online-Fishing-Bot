@@ -188,6 +188,9 @@ class Engine:
         if self.running:
             self.resume()
             return
+        sysc = self._cfg.system
+        if sysc.auto_learn and sysc.relearn_on_start:
+            self._relearn_all()
         self.validate()
         self._stop.clear()
         self._pause.clear()
@@ -489,7 +492,8 @@ class Engine:
 
     def _wait_bobber(self, cfg: Config) -> Match | None:
         self._set_stage("land")
-        if self._bobber is None:
+        fresh = self._bobber is None
+        if fresh:
             cfg = self._learn_bobber(cfg)
             if cfg is None:
                 return None
@@ -499,6 +503,7 @@ class Engine:
         first = last_seen = None
         looked_wide = False
         samples: list[Match] = []
+        frames: deque[np.ndarray] = deque(maxlen=5)
         while self.clock.now() < deadline:
             if first is None and not looked_wide and self.clock.now() - t0 > min(2.5, b.appear_timeout_s / 2):
                 looked_wide = True  # not where it used to land: the player moved or aims elsewhere
@@ -516,11 +521,15 @@ class Engine:
                     first, samples = t, []
                 last_seen = t
                 samples.append(m)
+                frames.append(frame)
                 if t - first >= b.settle_ms / 1000 and len(samples) >= 3:
                     tail = samples[-5:]
+                    base = Match(statistics.median(s.x for s in tail), statistics.median(s.y for s in tail),
+                                 m.w, m.h, statistics.median(s.score for s in tail), statistics.median(s.area for s in tail))
+                    if fresh or base.score < 0.7:  # learned mid-splash, or the light changed: retake it
+                        base = self._refine_bobber(list(frames), base) or base
                     self._emit("bobber")
-                    return Match(statistics.median(s.x for s in tail), statistics.median(s.y for s in tail),
-                                 m.w, m.h, m.score, statistics.median(s.area for s in tail))
+                    return base
             elif first is not None and t - last_seen > 0.4:
                 first = None  # lost it during the landing splash — start settling again
             self._tick()
@@ -538,6 +547,42 @@ class Engine:
         bx, by, bw, bh = band
         cx, cy = mon.left + bx + bw / 2, top + by + bh / 2
         return not (old.left <= cx <= old.left + old.width and old.top - bh <= cy <= old.top + old.height + bh)
+
+    def _find_near(self, frame: np.ndarray, bx: float, by: float, base: Match) -> Match | None:
+        """Best match of the float in a small window around where it floats (frame coordinates)."""
+        if not isinstance(self._bobber, TemplateFinder):
+            return self._bobber.find(frame)
+        mx, my = max(base.w, 12), int(2.5 * base.h)
+        x0, y0 = int(max(0, bx - base.w / 2 - mx)), int(max(0, by - base.h / 2 - base.h))
+        x1, y1 = int(min(frame.shape[1], bx + base.w / 2 + mx)), int(min(frame.shape[0], by + base.h / 2 + my))
+        m = self._bobber.find(frame[y0:y1, x0:x1])
+        if m is None:
+            return None
+        return Match(m.x + x0, m.y + y0, m.w, m.h, m.score, m.area)
+
+    def _refine_bobber(self, frames: list[np.ndarray], base: Match) -> Match | None:
+        """Retake the float's picture from the settled float (no landing splash, current light)."""
+        if not isinstance(self._bobber, TemplateFinder) or len(frames) < 3:
+            return None
+        med = np.median(np.stack(frames), axis=0).astype(np.uint8)
+        x0, y0 = int(round(base.x - base.w / 2)), int(round(base.y - base.h / 2))
+        tpl = med[max(0, y0):y0 + base.h, max(0, x0):x0 + base.w].copy()
+        if tpl.shape[:2] != (base.h, base.w):
+            return None
+        try:
+            finder = TemplateFinder(tpl, self._cfg.bite.grayscale, "bobber")
+        except VisionError:
+            return None
+        found = [finder.find(f) for f in frames]
+        scores = [f.score for f in found if f is not None]
+        if len(scores) < len(frames) or min(scores) < 0.7:
+            return None  # not steady enough to trust
+        self._bobber = finder
+        # the same float on another patch of water matches a little less well: leave room for that
+        threshold = round(min(0.62, max(0.5, min(scores) * 0.6)), 2)
+        self._adopt("bobber", tpl, {"bite": {"threshold": threshold}})
+        last = found[-1]
+        return Match(base.x, base.y, base.w, base.h, statistics.median(scores), base.area or last.area)
 
     def _wide_area(self, x: int, y: int) -> Region:
         """The part of the screen a cast aimed at (x, y) can land in."""
@@ -597,15 +642,17 @@ class Engine:
         while self.clock.now() < deadline:
             t = self.clock.now()
             frame = self._grab(region)
-            m = self._bobber.find(frame)
-            present = self._present(m, b)
-            # the best match jumping somewhere else means the float itself is no longer there
-            away = present and (abs(m.x - bx) > max(base.w, 12) or abs(m.y - by) > 2.5 * base.h)
-            gone = (not present or away or (b.method == "color" and m.area < base.area * 0.35)
-                    or (b.method == "template" and m.score < score_ref - 0.25))
+            m = self._find_near(frame, bx, by, base)
+            if b.method == "template":
+                # judged against the float's own usual match where it floats, not a fixed threshold:
+                # a twitch keeps it in the window and matching; under water the match collapses
+                gone = m is None or m.score < score_ref - max(0.2, 0.3 * score_ref)
+            else:
+                gone = m is None or m.area < base.area * 0.35
+            present = not gone
             swing = (max(ys) - min(ys)) if len(ys) >= 15 else 0.0
             deep = max(b.dip_px, 0.6 * base.h, 1.5 * swing)  # well past the normal bobbing
-            sink = (m.y - by) if present and not away else 0.0
+            sink = (m.y - by) if present else 0.0
             # splash: sudden motion right around the bobber compared to the usual waves
             x0, y0 = int(max(0, base.x - 2.5 * base.w)), int(max(0, base.y - 2.5 * base.h))
             x1, y1 = int(base.x + 2.5 * base.w), int(base.y + 2.5 * base.h)
@@ -916,6 +963,22 @@ class Engine:
         self._debug("bar-before", before)
         self._debug("bar-after", after)
         return None
+
+    def _relearn_all(self) -> None:
+        """A fresh Start: the player may stand elsewhere, use another rod or another UI scale —
+        forget everything learned and learn it again while fishing (nothing to do by hand)."""
+        self._bobber = self._marker = None
+        self._bobber_misses = self._no_bites = 0
+        self._escapes = 0
+        with self._lock:
+            self._templates.pop("bobber", None)
+            self._templates.pop("marker", None)
+        fresh = Config()
+        self._adopt_cfg({}, forget="marker")
+        self._adopt_cfg({"regions": {"bobber": asdict(Region()), "reel": asdict(Region())},
+                         "bite": {"method": "template", "threshold": fresh.bite.threshold, "sound_prints": []},
+                         "reel": {"method": "bar", "hold_moves": "auto"}}, forget="bobber")
+        self._dirty = True
 
     def _forget_bar(self) -> None:
         self._marker = None

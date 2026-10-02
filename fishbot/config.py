@@ -141,6 +141,7 @@ class SystemCfg:
     sound: bool = True
     auto_update: bool = True
     auto_learn: bool = True
+    relearn_on_start: bool = True  # every Start learns the float, the bar and the bite sound afresh
     learn_version: int = num(0, 0, 100)
     start_delay_s: float = num(3.0, 0, 30, 0.5, "s")
     idle_fps: int = num(30, 5, 120, 5, "fps")

@@ -541,7 +541,9 @@ class Engine:
                 return None
         b, region = cfg.bite, cfg.regions.bobber
         t0 = self.clock.now()
-        deadline = t0 + b.appear_timeout_s
+        # just found where it landed: if its picture keeps flickering (leftover foam from the last
+        # fish, a fish school nearby) don't give up on it — it is there
+        deadline = t0 + (1.5 if fresh and self._landed else b.appear_timeout_s)
         first = last_seen = None
         looked_wide = fresh  # just found where it landed: nothing to look for elsewhere
         settle = min(b.settle_ms, 500) if fresh else b.settle_ms  # the landing splash is already over
@@ -578,6 +580,9 @@ class Engine:
                 first = None  # lost it during the landing splash — start settling again
             self._tick()
             self._pace(t, cfg.system.idle_fps)
+        if fresh and self._landed and self._bobber is not None:
+            self._emit("bobber")
+            return self._landed[2]
         return None
 
     def _bar_moved(self) -> bool:
@@ -681,6 +686,7 @@ class Engine:
         # the ring is sized by the float (a picture that caught some splash too is larger than it)
         meter = SplashMeter(min(max(base.w, base.h), 40 * self._monitor_region().height / 1080))
         foam_since: float | None = None
+        foam_peak = 0.0
         audio = self.audio if b.use_sound else None
         self._bite_t = None
         log = logging.getLogger("fishbot.bite")
@@ -704,13 +710,17 @@ class Engine:
             foam = t >= calm_until and share is not None and meter.feed(t, share)
             if foam:
                 foam_since = foam_since or t
+                foam_peak = max(foam_peak, share) if foam_since != t else share
             else:
-                foam_since = None
+                foam_since, foam_peak = None, 0.0
             heard = foam and audio is not None and audio.bite_heard(t - 0.6, b.sound_prints)
             log.debug("t=%.2f share=%s limit=%s score=%.2f", t - t0, share and round(share, 3),
                       limit and round(limit, 3), m.score if m else 0.0)
             self._show(frame, "bobber", lambda img: self._draw_bite(img, m, base, by, foam))
-            if foam_since is not None and (heard or t - foam_since >= b.confirm_ms / 1000):
+            # a bite's splash keeps growing for a few frames; a bump that never gets going (the float
+            # turning, a fish school fading out nearby) is not one
+            strong = foam_since is not None and foam_peak >= max(0.06, 1.5 * (limit or 0))
+            if strong and (heard or t - foam_since >= b.confirm_ms / 1000):
                 self.last_trigger = "sound" if heard else "splash"
                 self._bite_t = foam_since
                 self.last_bite = {"share": round(share, 3), "limit": round(limit, 3)}

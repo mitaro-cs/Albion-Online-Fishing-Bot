@@ -42,8 +42,8 @@ def find_new_object(before: list[np.ndarray], after: list[np.ndarray], near: tup
     found = []
     for i in range(1, n):
         x, y, w, h, area = (int(v) for v in stats[i])
-        if not lo <= area <= hi or not 0.25 <= w / max(h, 1) <= 4:
-            continue
+        if not lo <= area <= hi or not 0.25 <= w / max(h, 1) <= 4 or h < 12 * scale:
+            continue  # (a float stands up out of the water; flat bits are foam left by the last fish)
         # how far its brightest part is out of the water's own range: a float is far out,
         # surf, sparkles and a passer-by's edge only a little
         strength = float(np.percentile(diff[y:y + h, x:x + w][labels[y:y + h, x:x + w] == i], 90))

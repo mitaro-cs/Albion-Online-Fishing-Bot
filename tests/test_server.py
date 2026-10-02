@@ -116,3 +116,25 @@ def test_uninstall_removes_data_and_blocks_writes(server):
     assert not root.exists()
     assert not post(base, "save_ui", {"lang": "ru"}, token=token)["ok"]
     assert not root.exists()
+
+
+def test_old_profile_takes_the_new_settings(tmp_path):
+    """A profile from 1.7.x: what it learned is dropped and the bite settings tuned in the game apply."""
+    from fishbot.config import Config
+    store = ProfileStore(tmp_path)
+    old = Config()
+    old.system.learn_version = 3
+    old.bite.confirm_ms, old.bite.bite_timeout_s, old.reel.hold_moves = 200, 35, "auto"
+    old.bite.sound_prints = [[0.1] * 48]
+    old.regions.bobber.width = old.regions.bobber.height = 100
+    store.save("Default", old)
+    game = SimGame(seed=1)
+    api = Api(store, SimScreen(game), SimInput(game), focus=None, profile="Default", hotkeys=False)
+    try:
+        cfg = store.load("Default")
+        fresh = Config()
+        assert cfg.system.learn_version == Api.LEARN_VERSION and cfg.system.relearn_on_start
+        assert cfg.bite.confirm_ms == fresh.bite.confirm_ms and cfg.bite.bite_timeout_s == fresh.bite.bite_timeout_s
+        assert cfg.reel.hold_moves == "right" and not cfg.bite.sound_prints and not cfg.regions.bobber.ok
+    finally:
+        api.shutdown()

@@ -241,17 +241,17 @@ class SplashMeter:
         if self.active:  # a splash that started with a jump lasts as long as the foam stays up
             foam = limit is not None and share > 0.8 * limit
         else:
-            foam = (limit is not None and share > limit and bool(before)
+            # it starts with a jump, and with foam all around the float (foam off to one side is a
+            # neighbour's float or a fish school)
+            foam = (limit is not None and share > limit and bool(before) and self.offset <= self.SIDE
                     and share - min(before) > max(0.03, 0.5 * limit))
-        # a bite's foam surrounds the float; foam off to one side is a neighbour's float or a fish school
-        foam = foam and self.offset <= self.SIDE
         self.active = foam
         if not foam:
             self.calm.append(share)
-            if self._v is not None:
-                self.waters.append(float(np.median(self._v[self.ring])))
-                near = cv2.dilate(self._v, self._kernel).astype(np.float32)  # a float bobbing a few px
-                self.peak = near if self.peak is None else np.maximum(self.peak - self.DECAY, near)
+        if self._v is not None and (limit is None or share < limit):  # only calm water is remembered
+            self.waters.append(float(np.median(self._v[self.ring])))
+            near = cv2.dilate(self._v, self._kernel).astype(np.float32)  # a float bobbing a few px
+            self.peak = near if self.peak is None else np.maximum(self.peak - self.DECAY, near)
         return foam
 
 

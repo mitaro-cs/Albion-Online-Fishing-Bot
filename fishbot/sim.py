@@ -283,8 +283,8 @@ def draw_splash(img, x: float, y: float, phase: float, seed: int) -> None:
     """Foam and bubble rings around the float (a bite, or the float landing); fades as ``phase`` → 1."""
     rng = random.Random(seed)
     fade = 1.0 - 0.6 * phase
-    for _ in range(14):
-        a, d = rng.uniform(0, 2 * math.pi), rng.uniform(11, 26) * (0.7 + 0.5 * phase)
+    for k in range(14):  # bubbles all around the float, like the game's
+        a, d = (k + rng.uniform(-0.3, 0.3)) * 2 * math.pi / 14, rng.uniform(11, 26) * (0.7 + 0.5 * phase)
         r = int(rng.uniform(2, 5) * (1 + phase))
         c = int(150 + 100 * fade)
         cv2.circle(img, (int(x + d * math.cos(a)), int(y + 0.7 * d * math.sin(a))), r, (c, c, c), -1 if rng.random() < 0.5 else 1,

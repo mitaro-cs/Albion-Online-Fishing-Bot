@@ -14,7 +14,7 @@ import numpy as np
 
 from . import __version__
 from .capture import Screen
-from .config import TEMPLATES, BiteCfg, Config, ProfileStore, Region, schema
+from .config import TEMPLATES, Config, ProfileStore, Region, schema
 from .controls import Input
 from .engine import Engine
 from .hotkeys import Hotkeys
@@ -101,16 +101,21 @@ class Api:
             self._templates = self._store.templates(self._profile)
             sysc = self._cfg.system
             if sysc.auto_learn and sysc.learn_version < self.LEARN_VERSION:
-                # earlier versions could mistake other UI for the reel bar: learn it again
-                self._store.delete_template(self._profile, "marker")
+                # v4 (1.8.0) finds the float on every cast, hooks on the splash at it and only learns
+                # the reel bar as Albion's band: what older versions stored is relearned, and the
+                # bite settings tuned in the game replace the old ones
+                for name in ("marker", "bobber"):
+                    self._store.delete_template(self._profile, name)
                 self._templates = self._store.templates(self._profile)
-                # v4: the bite is the splash at the float; "float under for 200 ms" came too late for it
-                self._cfg = self._cfg.merged({"regions": {"reel": asdict(Region())},
-                                              "reel": {"method": "bar", "hold_moves": "right"},
-                                              "bite": {"confirm_ms": BiteCfg().confirm_ms,
+                fresh = Config()
+                self._cfg = self._cfg.merged({"regions": {"reel": asdict(Region()), "bobber": asdict(Region())},
+                                              "reel": {"method": "bar", "hold_moves": fresh.reel.hold_moves},
+                                              "bite": {"method": "template", "threshold": fresh.bite.threshold,
+                                                       "confirm_ms": fresh.bite.confirm_ms, "sound_prints": [],
                                                        "bite_timeout_s": max(self._cfg.bite.bite_timeout_s,
-                                                                             BiteCfg().bite_timeout_s)},
-                                              "system": {"learn_version": self.LEARN_VERSION}})
+                                                                             fresh.bite.bite_timeout_s)},
+                                              "system": {"learn_version": self.LEARN_VERSION,
+                                                         "relearn_on_start": True}})
                 self._store.save(self._profile, self._cfg)
             self._engine.configure(self._cfg, self._templates)
             self._bind_hotkeys()

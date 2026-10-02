@@ -27,8 +27,8 @@ from .catches import CatchLog, find_banner, top_area
 from .learn import find_float, find_green_bar, find_marker, find_new_bar, find_new_object, green_span
 from .controls import Input
 from .system import beep, foreground_title
-from .vision import (BarFinder, BLUE, GREEN, PINK, RED, YELLOW, Match, TemplateFinder, VisionError, draw_box,
-                     draw_reel, make_finder)
+from .vision import (BarFinder, BLUE, GREEN, PINK, RED, YELLOW, Match, SplashMeter, TemplateFinder, VisionError,
+                     draw_box, draw_reel, make_finder)
 
 
 class Clock:
@@ -54,7 +54,7 @@ MESSAGES = {  # English fallback, used by the CLI; the UI translates codes itsel
     "countdown": "Starting in {s}s — switch to the game",
     "cast": "Cast #{n} at ({x}, {y}), power {ms} ms",
     "bobber": "Bobber settled",
-    "bite": "Bite after {s}s",
+    "bite": "Bite after {s}s ({why})",
     "reel_start": "Reeling…",
     "caught": "Caught! Reel took {s}s",
     "fail": "Missed: {reason}",
@@ -83,6 +83,7 @@ MESSAGES = {  # English fallback, used by the CLI; the UI translates codes itsel
     "relearn_bobber": "Lost the bobber — learning it again",
     "bait": "Used bait ({key})",
     "relearn_bar": "The learned reel bar never moves — learning it again",
+    "recast": "Nothing landed on the water — casting again",
     "loot": "{name} — {count} total",
     "vision_error": "Calibration problem: {code} {name}",
 }
@@ -134,7 +135,13 @@ class Engine:
         self.catches = CatchLog()
         self._loot_ref = None
         self.last_trigger = ""
+        self.last_bite: dict = {}
         self._learn_ref = None
+        self._per_cast = False      # the float is learned on every cast (auto-learn), not kept
+        self._landed: tuple | None = None  # (x, y, Match) where the float was just found, area coordinates
+        self._nothing_landed = False  # the last cast put nothing new on the water
+        self._last_try = True
+        self._float_known = False   # announced "learned the float" once this session
 
         self._lock = threading.RLock()
         self._cfg = Config()
@@ -201,6 +208,7 @@ class Engine:
         self._bait_at = None
         self._avoid.clear()
         self._point_index = 0
+        self._float_known = False
         self.status = "running"
         self._thread = threading.Thread(target=self._main, name="fishbot-engine", daemon=True)
         self._thread.start()
@@ -398,14 +406,29 @@ class Engine:
     # ── one fishing cycle ───────────────────────────────────────────────────
 
     def _cycle(self, cfg: Config) -> None:
-        self._cast(cfg)
-        learned = self._bobber is not None
-        base = self._wait_bobber(cfg)
+        for attempt in range(3):
+            if cfg.system.auto_learn:
+                # find the float afresh on every cast: where it landed (the cast power varies) and how
+                # it looks in the light right now — following an old picture locked onto rocks and glints
+                self._bobber = self._landed = None
+                self._per_cast = True
+            self._nothing_landed = False
+            self._cast(cfg, retry=attempt > 0)
+            learned = self._bobber is not None
+            self._last_try = attempt == 2
+            base = self._wait_bobber(cfg)
+            if base is not None or learned or not self._nothing_landed:
+                break
+            # nothing new on the water: the game ignored the press (still busy putting the last fish
+            # away) or it reeled in a line that was already out — either way, just cast again
+            self._emit("recast", "warn")
         if base is None:
-            # the line is most likely out even though we didn't see the float: reel it in, or the
-            # next "cast" click only pulls it back ("Too early!") and fishing goes out of step
-            self._click()
-            self._sleep(0.8)
+            if learned or not self._nothing_landed:
+                # the line is out even though the float never settled where we look: reel it in, or
+                # the next "cast" press only pulls it back and fishing goes out of step. (When nothing
+                # landed at all there is no line to reel in: a click would cast a short one instead.)
+                self._click()
+                self._sleep(0.8)
             self._bobber_misses += learned
             if self._bobber_misses >= 2:  # it looks different now (light, skin): learn it again
                 self._forget_bobber()
@@ -422,7 +445,7 @@ class Engine:
         self._no_bites = 0
         self.stats.bites += 1
         self.stats.bite_sum += waited
-        self._emit("bite", s=round(waited, 1))
+        self._emit("bite", s=round(waited, 1), why=self.last_trigger, **self.last_bite)
         self._hook(cfg)
         result, took = self._reel(cfg)
         if result != "no_game":
@@ -448,10 +471,10 @@ class Engine:
                     self._escapes = 0
             self._fail(cfg, result)
 
-    def _cast(self, cfg: Config) -> None:
+    def _cast(self, cfg: Config, retry: bool = False) -> None:
         self._set_stage("cast")
         c = cfg.cast
-        target = self._pick_target(cfg)
+        target = self._target if retry and self._target else self._pick_target(cfg)
         if target is not None:
             j = c.aim_jitter_px
             x = int(target[0] + self.rng.uniform(-j, j))
@@ -464,8 +487,9 @@ class Engine:
         if self._bobber is None:
             self._learn_ref = self._snap_water(x, y)
         hold = max(0.1, (c.power_ms + self.rng.uniform(-c.power_jitter_ms, c.power_jitter_ms)) / 1000)
-        self.stats.casts += 1
-        self._emit("cast", n=self.stats.casts, x=x, y=y, ms=int(hold * 1000))
+        if not retry:  # a press the game ignored is not another cast
+            self.stats.casts += 1
+            self._emit("cast", n=self.stats.casts, x=x, y=y, ms=int(hold * 1000))
         self.inp.down()
         try:
             self._sleep(hold)
@@ -501,7 +525,8 @@ class Engine:
         t0 = self.clock.now()
         deadline = t0 + b.appear_timeout_s
         first = last_seen = None
-        looked_wide = False
+        looked_wide = fresh  # just found where it landed: nothing to look for elsewhere
+        settle = min(b.settle_ms, 500) if fresh else b.settle_ms  # the landing splash is already over
         samples: list[Match] = []
         frames: deque[np.ndarray] = deque(maxlen=5)
         while self.clock.now() < deadline:
@@ -512,7 +537,8 @@ class Engine:
                     region = moved
             t = self.clock.now()
             frame = self._grab(region)
-            m = self._bobber.find(frame)
+            # just learned: it is where it landed — a look-alike elsewhere in the area is not it
+            m = self._find_near(frame, *self._landed) if fresh and self._landed else self._bobber.find(frame)
             present = self._present(m, b)
             self._show(frame, "bobber", lambda img: draw_box(img, m, GREEN if present else RED,
                                                              f"{m.score:.2f}") if m else None)
@@ -522,7 +548,7 @@ class Engine:
                 last_seen = t
                 samples.append(m)
                 frames.append(frame)
-                if t - first >= b.settle_ms / 1000 and len(samples) >= 3:
+                if t - first >= settle / 1000 and len(samples) >= 3:
                     tail = samples[-5:]
                     base = Match(statistics.median(s.x for s in tail), statistics.median(s.y for s in tail),
                                  m.w, m.h, statistics.median(s.score for s in tail), statistics.median(s.area for s in tail))
@@ -580,7 +606,7 @@ class Engine:
         self._bobber = finder
         # the same float on another patch of water matches a little less well: leave room for that
         threshold = round(min(0.62, max(0.5, min(scores) * 0.6)), 2)
-        self._adopt("bobber", tpl, {"bite": {"threshold": threshold}})
+        self._adopt("bobber", tpl, {"bite": {"threshold": threshold}}, save=not self._per_cast)
         last = found[-1]
         return Match(base.x, base.y, base.w, base.h, statistics.median(scores), base.area or last.area)
 
@@ -619,70 +645,57 @@ class Engine:
         self._adopt_cfg({"regions": {"bobber": asdict(Region())}}, forget="bobber")
 
     def _wait_bite(self, cfg: Config, base: Match) -> float | None:
-        """Hook only when the float has really gone under.
+        """Hook on the bite: the burst of foam and bubbles that hits the float.
 
-        It must stay under (gone, or pulled well below its usual bobbing) for ``confirm_ms``.
-        A splash right around it, or the learned bite sound at that moment, halves the wait;
-        the bite sound also counts a shallower pull as "under". Waves, nibbles, fish swimming
-        by, music and other game sounds on their own never hook — in the game a click before
-        the bite is "Too early!" and costs the cast.
+        That is how a bite looks in Albion — the float itself barely sinks, so "the float went
+        under" is no signal (and its picture matching a little worse is no bite either: that was
+        what hooked too early). The share of bright foam in a ring around the float is compared
+        with its own calm level on this cast; a jump well above it for ``confirm_ms`` is the bite.
+        The learned bite sound at that moment shortens the wait to a single frame. Waves, the
+        float's bobbing, fish swimming by, music and other game sounds never hook on their own.
         """
         cfg = self._cfg  # may hold a freshly learned bobber area
         self._set_stage("bite", cfg.bite.bite_timeout_s)
         b, region = cfg.bite, cfg.regions.bobber
         t0 = self.clock.now()
-        deadline, calm_until = t0 + b.bite_timeout_s, t0 + 1.0  # landing ripples first
-        bx, by, score_ref = base.x, base.y, base.score
-        ys: deque[float] = deque(maxlen=90)
-        energies: deque[float] = deque(maxlen=45)
-        prev = None
-        under_since: float | None = None
+        deadline, calm_until = t0 + b.bite_timeout_s, t0 + 0.3  # the landing splash is over by now
+        bx, by = base.x, base.y
+        # the ring is sized by the float (a picture that caught some splash too is larger than it)
+        meter = SplashMeter(min(max(base.w, base.h), 40 * self._monitor_region().height / 1080))
+        foam_since: float | None = None
         audio = self.audio if b.use_sound else None
         self._bite_t = None
+        log = logging.getLogger("fishbot.bite")
+        still: deque[tuple[float, float, float]] = deque(maxlen=int(5 * cfg.system.idle_fps))
         while self.clock.now() < deadline:
             t = self.clock.now()
             frame = self._grab(region)
             m = self._find_near(frame, bx, by, base)
-            if b.method == "template":
-                # judged against the float's own usual match where it floats, not a fixed threshold:
-                # a twitch keeps it in the window and matching; under water the match collapses
-                gone = m is None or m.score < score_ref - max(0.2, 0.3 * score_ref)
+            if m is not None and self._present(m, b) and abs(m.x - bx) < base.w and abs(m.y - by) < base.h:
+                bx = 0.85 * bx + 0.15 * m.x  # follow the float as it drifts with the waves
+                by = 0.85 * by + 0.15 * m.y
+            if m is not None:
+                still.append((m.x, m.y, m.score))
+                if (self._per_cast and len(still) == still.maxlen and min(s for _, _, s in still) > 0.97
+                        and np.ptp([x for x, _, _ in still]) < 0.5 and np.ptp([y for _, y, _ in still]) < 0.5):
+                    log.info("the tracked float never moves: it is not the float")
+                    return None  # a float always bobs; this is a rock, a reflection or a piece of UI
+            share = meter.share(frame, bx, by)
+            limit = meter.threshold()
+            foam = t >= calm_until and share is not None and meter.feed(t, share)
+            if foam:
+                foam_since = foam_since or t
             else:
-                gone = m is None or m.area < base.area * 0.35
-            present = not gone
-            swing = (max(ys) - min(ys)) if len(ys) >= 15 else 0.0
-            deep = max(b.dip_px, 0.6 * base.h, 1.5 * swing)  # well past the normal bobbing
-            sink = (m.y - by) if present else 0.0
-            # splash: sudden motion right around the bobber compared to the usual waves
-            x0, y0 = int(max(0, base.x - 2.5 * base.w)), int(max(0, base.y - 2.5 * base.h))
-            x1, y1 = int(base.x + 2.5 * base.w), int(base.y + 2.5 * base.h)
-            patch = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.int16)
-            splash = False
-            if prev is not None and prev.shape == patch.shape and patch.size:
-                e = float(np.abs(patch - prev).mean())
-                if len(energies) >= 20:
-                    med = float(np.median(energies))
-                    mad = float(np.median(np.abs(np.asarray(energies) - med)))
-                    splash = e > med + 6 * mad + 3.0
-                if not splash:
-                    energies.append(e)
-            prev = patch
-            heard = audio is not None and t >= calm_until and audio.bite_heard(t - 0.6, b.sound_prints)
-            under = t >= calm_until and (gone or sink >= deep or (heard and sink >= b.dip_px))
-            if under:
-                under_since = under_since or t
-            else:
-                under_since = None
-                if present and not gone:
-                    ys.append(m.y)
-                    bx = 0.92 * bx + 0.08 * m.x  # follow slow drift with the waves
-                    by = 0.92 * by + 0.08 * m.y
-                    score_ref = 0.95 * score_ref + 0.05 * m.score
-            need = b.confirm_ms / 1000 * (0.5 if heard or splash else 1.0)
-            self._show(frame, "bobber", lambda img: self._draw_bite(img, m, base, by, under))
-            if under_since is not None and t - under_since >= need:
-                self.last_trigger = "sound" if heard else "lost" if gone else "dip"
-                self._bite_t = under_since
+                foam_since = None
+            heard = foam and audio is not None and audio.bite_heard(t - 0.6, b.sound_prints)
+            log.debug("t=%.2f share=%s limit=%s score=%.2f", t - t0, share and round(share, 3),
+                      limit and round(limit, 3), m.score if m else 0.0)
+            self._show(frame, "bobber", lambda img: self._draw_bite(img, m, base, by, foam))
+            if foam_since is not None and (heard or t - foam_since >= b.confirm_ms / 1000):
+                self.last_trigger = "sound" if heard else "splash"
+                self._bite_t = foam_since
+                self.last_bite = {"share": round(share, 3), "limit": round(limit, 3)}
+                log.info("bite: foam %.3f over a limit of %.3f (calm %d frames)", share, limit, len(meter.calm))
                 return t - t0
             self._tick()
             self._pace(t, cfg.system.idle_fps)
@@ -875,15 +888,18 @@ class Engine:
 
     def _learn_bobber(self, cfg: Config) -> Config | None:
         region, before, near, scale = self._learn_ref
-        self._sleep(max(1.4, cfg.bite.settle_ms / 1000))  # let it fly and land
+        self._sleep(max(1.8, cfg.bite.settle_ms / 1000))  # let it fly, land and the landing splash settle
         after = []
         for _ in range(5):
             after.append(self._grab(region))
             self._sleep(0.08)
-        found = find_new_object(before, after, near, scale)
+        # the float lands around the aim point (nearer or farther with the cast power), never far off
+        found = find_new_object(before, after, near, scale, reach=0.25 * self._monitor_region().height)
+        self._nothing_landed = found is None
         if found is None:
-            self._emit("learn_bobber_fail", "warn")
-            self._debug("bobber-after", after[-1])
+            if self._last_try:
+                self._emit("learn_bobber_fail", "warn")
+                self._debug("bobber-after", after[-1])
             return None
         tpl, (bx, by, bw, bh) = found
         # search only around where it landed: faster and no look-alikes elsewhere
@@ -892,13 +908,21 @@ class Engine:
         cx, cy = region.left + bx + bw // 2, region.top + by + bh // 2
         area = Region(int(min(max(cx - sw // 2, mon.left), mon.left + mon.width - sw)),
                       int(min(max(cy - sh // 2, mon.top), mon.top + mon.height - sh)), sw, sh)
+        self._landed = (float(cx - area.left), float(cy - area.top), Match(cx - area.left, cy - area.top, bw, bh, 1.0, 0))
+        logging.getLogger("fishbot.bite").info("float found at (%d, %d), %d×%d", cx, cy, bw, bh)
+        shot = after[-1].copy()
+        cv2.rectangle(shot, (bx, by), (bx + bw, by + bh), (99, 230, 245), 1)
+        self._debug("float", shot)
         self._bobber = TemplateFinder(tpl, cfg.bite.grayscale, "bobber")
         # how well does it match itself frame to frame? set the threshold from that
         scores = [self._bobber.find(f).score for f in after]
         threshold = round(min(0.62, max(0.45, min(scores) * 0.75)), 2)
         cfg = self._adopt("bobber", tpl, {"regions": {"bobber": asdict(area)},
-                                          "bite": {"method": "template", "threshold": threshold}})
-        self._emit("learn_bobber", "success", w=tpl.shape[1], h=tpl.shape[0])
+                                          "bite": {"method": "template", "threshold": threshold}},
+                          save=not self._per_cast or not self._float_known)
+        if not self._float_known:
+            self._float_known = True
+            self._emit("learn_bobber", "success", w=tpl.shape[1], h=tpl.shape[0])
         return cfg
 
     def _learn_reel(self, cfg: Config) -> Config | None:
@@ -906,11 +930,16 @@ class Engine:
         before = after = self._learn_ref
         rejected: list[tuple[int, int]] = []
         deadline = self.clock.now() + max(2.5, cfg.reel.appear_timeout_s)
+        last = None
         while self.clock.now() < deadline:
-            self._sleep(0.12)
+            self._sleep(0.04 if last is not None else 0.12)  # a band in sight: look again soon
             after = self._grab(mon)
             band = find_green_bar(after)  # Albion's band: green middle, red chevron ends, bobber on top
-            if band is not None:
+            # it zooms in when it appears: learn it once it stopped growing, not mid-animation
+            steady = (band is not None and last is not None and abs(band[0] - last[0]) <= 3
+                      and abs(band[2] - last[2]) <= max(3, 0.03 * band[2]))
+            last = band
+            if steady:
                 bx, by, bw, bh = band
                 top = max(0, by - bh)
                 region = Region(mon.left + bx, mon.top + top, bw, by + bh - top + 1)
@@ -924,6 +953,8 @@ class Engine:
                     cv2.rectangle(shot, (bx, top), (bx + bw, by + bh), (99, 230, 245), 2)
                     self._debug("bar-learned", shot)
                     return cfg
+            if band is not None:
+                continue  # Albion's band is in sight, just not steady yet: look again
             bar = find_new_bar(before, after) if before is not None else None
             if bar is None:
                 continue
@@ -1012,13 +1043,13 @@ class Engine:
         except Exception:
             traceback.print_exc()
 
-    def _adopt(self, name: str, tpl, patch: dict) -> Config:
+    def _adopt(self, name: str, tpl, patch: dict, save: bool = True) -> Config:
         """Use a learned template now and hand it to the owner for saving."""
         with self._lock:
             self._templates[name] = tpl
             self._cfg = self._cfg.merged(patch)
             cfg = self._cfg
-        if self.on_learn:
+        if self.on_learn and save:
             try:
                 self.on_learn(name, tpl, patch)
             except Exception:
@@ -1083,6 +1114,8 @@ class Engine:
     def _cooldown(self, cfg: Config) -> None:
         s = cfg.session
         dur = (s.cooldown_ms + self.rng.uniform(0, s.cooldown_jitter_ms)) / 1000
+        if self._loot_due:
+            dur += 1.0  # the character puts the fish away first; a cast before that is ignored
         self._set_stage("cooldown", dur)
         end = self.clock.now() + dur
         if self._loot_due:  # read the catch banner within the pause, not on top of it

@@ -68,9 +68,9 @@ class BiteCfg:
     threshold: float = num(0.7, 0.3, 0.99, 0.01)
     settle_ms: int = num(1200, 0, 5000, 50, "ms")
     dip_px: int = num(6, 1, 60, 1, "px")
-    confirm_ms: int = num(200, 0, 2000, 10, "ms")
+    confirm_ms: int = num(60, 0, 2000, 10, "ms")  # how long the foam must last
     appear_timeout_s: float = num(6.0, 1, 30, 0.5, "s")
-    bite_timeout_s: float = num(35.0, 5, 180, 1, "s")
+    bite_timeout_s: float = num(90.0, 5, 180, 1, "s")  # a bite can take 40 s and more
     hook_delay_ms: int = num(60, 0, 1500, 10, "ms")
     hook_jitter_ms: int = num(60, 0, 1000, 10, "ms")
     use_sound: bool = True

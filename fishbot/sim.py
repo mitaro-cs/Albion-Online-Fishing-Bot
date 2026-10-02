@@ -38,6 +38,8 @@ class SimGame:
         self.state_t = self.t
         self.bobber = (0.0, 0.0)
         self.bite_at = 0.0
+        self.landing_seed = self.bite_seed = 0
+        self.landed_at = -1.0
         self.spot_index: int | None = None
         self.x = self.v = self.progress = self.duration = 0.0
         self.fish = (1.0, 1.0, 0.0, 0.0)
@@ -46,6 +48,7 @@ class SimGame:
         self.skin = 0        # 1: a different float look (another rod, night light)
         self.early = 0       # clicks before the fish took the bait ("Too early!" in the game)
         self.nibbles = False  # the float twitches a few times before the real bite
+        self.surf = False     # the float drifts by a shore where foam rolls in and out
         self.sounds: list[tuple[float, str]] = []  # game sounds: (start, kind)
         self.ambient = 0.0   # mean seconds between unrelated game sounds (frogs, music); 0 = none
         self._next_ambient = 0.0
@@ -152,11 +155,13 @@ class SimGame:
                 self.sounds.append((t, self.rng.choice(("croak", "chime"))))
             self._next_ambient = t + self.rng.expovariate(1 / self.ambient)
         if self.state == "flying" and age > 0.7:
+            self.landing_seed, self.landed_at = self.rng.randrange(1 << 30), t
             self.spot_index = self._spot_at(self.bobber)
             self.bite_at = t + self.rng.uniform(2.0, 7.0)
             self.sounds.append((t, "land"))  # the float lands with a splash
             self._set("floating")
         elif self.state == "floating" and self.spot_index is not None and t >= self.bite_at:
+            self.bite_seed = self.rng.randrange(1 << 30)
             self.sounds.append((t, "bite"))
             self._set("biting")
         elif self.state == "floating" and self.nibbles and t > self._twitch[1] + 0.6 and self.rng.random() < dt * 0.8:
@@ -164,7 +169,9 @@ class SimGame:
             self._twitch = (t, t + self.rng.uniform(0.1, 0.3), self.rng.uniform(4.0, 8.0))
             self.sounds.append((t, "nibble"))
         elif self.state == "biting" and age > 1.2:
-            self._set("idle")
+            # like the game: the fish lets go, and another one bites a while later
+            self.bite_at = t + self.rng.uniform(4.0, 12.0)
+            self._set("floating")
         elif self.state == "reel":
             a1, a2, p1, p2 = self.fish
             force = a1 * math.sin(1.7 * t + p1) + a2 * math.sin(4.3 * t + p2)
@@ -225,14 +232,24 @@ class SimGame:
                 sx, sy = self.cursor[0] - ox, H - 160 - oy
                 cv2.circle(img, (int(sx + (bx - sx) * f), int(sy + (by - sy) * f - 120 * math.sin(math.pi * f))),
                            5, (235, 235, 235), -1, cv2.LINE_AA)
-            elif self.state == "floating":
+            if self.surf and self.state in ("floating", "biting"):
+                # a band of surf beside the float, slowly rolling in and out (no bite)
+                k = 0.5 + 0.5 * math.sin(self.t * 2.2)
+                for i in range(7):
+                    sx = int(bx - 30 + 9 * i)
+                    sy = int(by + 16 - 6 * k + 2 * math.sin(i))
+                    c = int(140 + 100 * k)
+                    cv2.ellipse(img, (sx, sy), (6, 3), 0, 0, 360, (c, c, c), -1, cv2.LINE_AA)
+            if self.state == "floating":
                 s0, s1, depth = self._twitch
                 dip = depth if s0 <= self.t < s1 else 0.0
                 draw_bobber(img, bx, by + 2 * math.sin(self.t * 3.9) + dip, self.skin)
+                if self.t - self.landed_at < 0.4:  # it lands with a splash
+                    draw_splash(img, bx, by, (self.t - self.landed_at) / 0.4, self.landing_seed)
             elif self.state == "biting":
-                for i in range(3):
-                    rr = int(8 + 10 * ((age * 1.6 + i / 3) % 1))
-                    cv2.ellipse(img, (int(bx), int(by + 6)), (rr, rr // 3), 0, 0, 360, (225, 225, 225), 1, cv2.LINE_AA)
+                # the bite: a burst of foam and bubbles hits the float, which stays where it is
+                draw_bobber(img, bx, by + 2 * math.sin(self.t * 3.9) + 2, self.skin)
+                draw_splash(img, bx, by, min(1.0, age / 0.8), self.bite_seed)
             elif self.state == "reel":
                 draw_bar(img, self.bar_at[0] - ox, self.bar_at[1] - oy, self.x, self.progress / self.duration,
                          self.zone() if self.green else None)
@@ -260,6 +277,18 @@ def draw_bobber(img, x: float, y: float, skin: int = 0) -> None:
     cv2.ellipse(img, (x, y), (6, 6), 0, 180, 360, (60, 60, 230), -1, cv2.LINE_AA)
     cv2.ellipse(img, (x, y), (6, 6), 0, 0, 180, (240, 240, 240), -1, cv2.LINE_AA)
     cv2.line(img, (x, y - 7), (x, y - 12), (20, 20, 20), 2, cv2.LINE_AA)
+
+
+def draw_splash(img, x: float, y: float, phase: float, seed: int) -> None:
+    """Foam and bubble rings around the float (a bite, or the float landing); fades as ``phase`` → 1."""
+    rng = random.Random(seed)
+    fade = 1.0 - 0.6 * phase
+    for _ in range(14):
+        a, d = rng.uniform(0, 2 * math.pi), rng.uniform(11, 26) * (0.7 + 0.5 * phase)
+        r = int(rng.uniform(2, 5) * (1 + phase))
+        c = int(150 + 100 * fade)
+        cv2.circle(img, (int(x + d * math.cos(a)), int(y + 0.7 * d * math.sin(a))), r, (c, c, c), -1 if rng.random() < 0.5 else 1,
+                   cv2.LINE_AA)
 
 
 def draw_spot(img, x: float, y: float, t: float) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from collections import deque
 from dataclasses import dataclass
 
 import cv2
@@ -119,6 +120,71 @@ class BarFinder:
             return None
         cx, cy, w, hh, area = f
         return Match(cx, cy, w, hh, 1.0, area)
+
+
+class SplashMeter:
+    """How much fresh white foam and bubbles surround the float: that is how a bite looks in Albion.
+
+    When a fish takes the bait a burst of foam and bubble rings hits the float (it hardly sinks).
+    The ring around the float (the float itself left out) is watched pixel by pixel: every pixel
+    remembers how bright it and its close neighbours have lately been, so surf along a shore,
+    glints and the float's own bobbing, which come and go all the time, stop counting. The bite is
+    a sudden jump of the share of pixels well brighter than both the calm water and that memory.
+    """
+
+    JUMP_S = (0.15, 0.03)  # "just before" window for the jump, seconds back from now
+    DECAY = 1.0            # how fast a pixel forgets a bright moment, brightness levels per frame
+    INNER, SPREAD, ARM, MARGIN = 0.45, 3, 16, 10
+
+    def __init__(self, size: float):
+        self.r1 = max(12, int(round(1.35 * size)))
+        self.r0 = self.INNER * size
+        yy, xx = np.mgrid[-self.r1:self.r1, -self.r1:self.r1]
+        self.ring = (np.hypot(xx, yy) > self.r0) & (np.hypot(xx, yy) < self.r1)
+        self.calm: list[float] = []
+        self.waters: list[float] = []
+        self.peak: np.ndarray | None = None
+        self.recent: deque[tuple[float, float]] = deque(maxlen=60)
+        self._v: np.ndarray | None = None
+        self._kernel = np.ones((self.SPREAD, self.SPREAD), np.uint8)
+
+    def share(self, frame: np.ndarray, x: float, y: float) -> float | None:
+        """Share of the ring around (x, y) that is freshly much brighter than it was."""
+        r = self.r1
+        x0, y0 = int(round(x)) - r, int(round(y)) - r
+        if x0 < 0 or y0 < 0 or x0 + 2 * r > frame.shape[1] or y0 + 2 * r > frame.shape[0]:
+            self._v = None
+            return None
+        v = frame[y0:y0 + 2 * r, x0:x0 + 2 * r].max(axis=2)
+        self._v = v
+        ring = v[self.ring]
+        water = float(np.median(self.waters[-90:])) if len(self.waters) >= 5 else float(np.median(ring))
+        bright = ring > water + max(40.0, 0.45 * water)
+        if self.peak is not None:
+            bright &= ring > self.peak[self.ring] + self.MARGIN
+        return float(bright.mean())
+
+    def threshold(self) -> float | None:
+        """Share that counts as a splash, from the calm so far (None until enough is known)."""
+        if len(self.calm) < self.ARM:
+            return None
+        # the median: the tail of the landing splash or a glint in the calm frames can't lift it
+        return max(0.035, 2.0 * float(np.median(self.calm[-150:])) + 0.02)
+
+    def feed(self, t: float, share: float) -> bool:
+        """Is this frame part of a splash? Calm frames teach the calm level."""
+        limit = self.threshold()
+        before = [s for ts, s in self.recent if t - self.JUMP_S[0] <= ts <= t - self.JUMP_S[1]]
+        self.recent.append((t, share))
+        foam = (limit is not None and share > limit and bool(before)
+                and share - min(before) > max(0.03, 0.5 * limit))
+        if not foam:
+            self.calm.append(share)
+            if self._v is not None:
+                self.waters.append(float(np.median(self._v[self.ring])))
+                near = cv2.dilate(self._v, self._kernel).astype(np.float32)  # a float bobbing a few px
+                self.peak = near if self.peak is None else np.maximum(self.peak - self.DECAY, near)
+        return foam
 
 
 def make_finder(method: str, template: np.ndarray | None, cfg, name: str):

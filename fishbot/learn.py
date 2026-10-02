@@ -23,12 +23,15 @@ def _gray(img: np.ndarray) -> np.ndarray:
 
 
 def find_new_object(before: list[np.ndarray], after: list[np.ndarray], near: tuple[int, int],
-                    scale: float = 1.0) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
-    """Template + bbox (x, y, w, h) of the compact object that appeared, preferring ones near ``near``."""
+                    scale: float = 1.0, reach: float | None = None) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
+    """Template + bbox (x, y, w, h) of the compact object that appeared, preferring ones near ``near``
+    and ignoring anything farther than ``reach`` from it (UI that changed meanwhile, other players)."""
     ref, now = median_frame(before), median_frame(after)
-    noise = 0
+    noise = 0.0
     if len(before) >= 2:  # how much the water alone moves between shots
-        noise = float(np.percentile(np.abs(_gray(before[0]) - _gray(before[-1])), 99))
+        # a loot banner or a passer-by changing in one place is not the water: keep it from
+        # raising the bar so high that the float itself no longer counts
+        noise = min(float(np.percentile(np.abs(_gray(before[0]) - _gray(before[-1])), 97)), 40.0)
     diff = np.abs(_gray(now) - _gray(ref)).astype(np.uint8)
     mask = (diff > max(28.0, noise * 1.3)).astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))   # drops the thin fishing line
@@ -41,8 +44,15 @@ def find_new_object(before: list[np.ndarray], after: list[np.ndarray], near: tup
         if not lo <= area <= hi or not 0.25 <= w / max(h, 1) <= 4:
             continue
         strength = float(diff[y:y + h, x:x + w].mean())
+        fill = area / float(w * h)
+        if strength < 25 or fill < 0.25:
+            continue  # surf along the shore and sparkling water: faint, ragged and spread out
         dist = float(np.hypot(cents[i][0] - near[0], cents[i][1] - near[1]))
-        found.append((strength * np.sqrt(area) / (1 + dist / (220 * scale)), (x, y, w, h)))
+        if reach is not None and dist > reach:
+            continue
+        # a float is small and solid: being bigger than one earns nothing
+        size = np.sqrt(min(area, 400 * scale * scale))
+        found.append((strength * size * fill / (1 + dist / (220 * scale)), (x, y, w, h)))
     pad = 3
     for _, (x, y, w, h) in sorted(found, reverse=True):
         x0, y0 = max(0, x - pad), max(0, y - pad)
@@ -130,9 +140,9 @@ def find_marker(strip: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int
     return strip[y0:y1, x0:x1].copy(), (x0, y0, x1 - x0, y1 - y0)
 
 
-def green_mask(img: np.ndarray) -> np.ndarray:
+def green_mask(img: np.ndarray, sat: int = 70, val: int = 60) -> np.ndarray:
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    return cv2.inRange(hsv, (35, 70, 60), (90, 255, 255))
+    return cv2.inRange(hsv, (35, sat, val), (90, 255, 255))
 
 
 def green_span(strip: np.ndarray, frac: float = 0.15) -> tuple[float, float] | None:
@@ -160,28 +170,38 @@ def green_span(strip: np.ndarray, frac: float = 0.15) -> tuple[float, float] | N
 def find_green_bar(frame: np.ndarray) -> tuple[int, int, int, int] | None:
     """Albion's minigame band: a wide strip with a green middle and red/orange chevron ends.
     Returns the band's bbox (x, y, w, h) in frame coordinates."""
+    # the band is a bright, saturated green; at night the grass around it is a dark green that a
+    # loose threshold joins to it in one blob, so try the strict threshold first
+    for sat, val in ((120, 90), (70, 60)):
+        band = _green_band(frame, green_mask(frame, sat, val))
+        if band is not None:
+            return band
+    return None
+
+
+def _green_band(frame: np.ndarray, mask: np.ndarray) -> tuple[int, int, int, int] | None:
     H, W = frame.shape[:2]
-    green = cv2.morphologyEx(green_mask(frame), cv2.MORPH_CLOSE, np.ones((5, 15), np.uint8))
+    green = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 15), np.uint8))
     n, _, stats, _ = cv2.connectedComponentsWithStats(green, connectivity=8)
-    best, best_area = None, 0
+    found = []
     for i in range(1, n):
         x, y, w, h, area = (int(v) for v in stats[i])
-        if w >= 0.04 * W and w >= 2.5 * h and 8 <= h <= max(0.12 * H, 70) and area / (w * h) > 0.6 and area > best_area:
-            best, best_area = (x, y, w, h), area
-    if best is None:
-        return None
-    x, y, w, h = best
-    hsv = cv2.cvtColor(frame[y:y + h], cv2.COLOR_BGR2HSV)
-    hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    # chevron ends: bright red/orange/yellow (grass and water are much darker or bluer)
-    chevron = (((hue <= 32) | (hue >= 165)) & (sat > 120) & (val > 140)).mean(axis=0) > 0.25
-    reach = int(w * 0.5)
-    x0, x1 = x, x + w
-    while x0 > max(0, x - reach) and chevron[x0 - 1]:
-        x0 -= 1
-    while x1 < min(W, x + w + reach) and chevron[x1]:
-        x1 += 1
-    return x0, y, x1 - x0, h
+        if w >= 0.04 * W and w >= 2.5 * h and 8 <= h <= max(0.12 * H, 70) and area / (w * h) > 0.6:
+            found.append((area, (x, y, w, h)))
+    for _, (x, y, w, h) in sorted(found, reverse=True):
+        hsv = cv2.cvtColor(frame[y:y + h], cv2.COLOR_BGR2HSV)
+        hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+        # chevron ends: bright red/orange/yellow (grass and water are much darker or bluer)
+        chevron = (((hue <= 32) | (hue >= 165)) & (sat > 120) & (val > 140)).mean(axis=0) > 0.25
+        reach = int(w * 0.5)
+        x0, x1 = x, x + w
+        while x0 > max(0, x - reach) and chevron[x0 - 1]:
+            x0 -= 1
+        while x1 < min(W, x + w + reach) and chevron[x1]:
+            x1 += 1
+        if x0 < x and x1 > x + w:  # red ends on both sides: a patch of grass has none
+            return x0, y, x1 - x0, h
+    return None
 
 
 def find_float(img: np.ndarray) -> tuple[float, float, int, int, float] | None:

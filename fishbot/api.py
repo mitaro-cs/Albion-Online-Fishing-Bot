@@ -14,7 +14,7 @@ import numpy as np
 
 from . import __version__
 from .capture import Screen
-from .config import TEMPLATES, Config, ProfileStore, Region, schema
+from .config import TEMPLATES, BiteCfg, Config, ProfileStore, Region, schema
 from .controls import Input
 from .engine import Engine
 from .hotkeys import Hotkeys
@@ -93,7 +93,7 @@ class Api:
         self._audio.stop()
         self._updater.finish()
 
-    LEARN_VERSION = 3  # bump when what auto-learn stores changes, so old guesses get relearned
+    LEARN_VERSION = 4  # bump when what auto-learn stores changes, so old guesses get relearned
 
     def _load(self) -> None:
         with self._lock:
@@ -104,8 +104,12 @@ class Api:
                 # earlier versions could mistake other UI for the reel bar: learn it again
                 self._store.delete_template(self._profile, "marker")
                 self._templates = self._store.templates(self._profile)
+                # v4: the bite is the splash at the float; "float under for 200 ms" came too late for it
                 self._cfg = self._cfg.merged({"regions": {"reel": asdict(Region())},
                                               "reel": {"method": "bar", "hold_moves": "auto"},
+                                              "bite": {"confirm_ms": BiteCfg().confirm_ms,
+                                                       "bite_timeout_s": max(self._cfg.bite.bite_timeout_s,
+                                                                             BiteCfg().bite_timeout_s)},
                                               "system": {"learn_version": self.LEARN_VERSION}})
                 self._store.save(self._profile, self._cfg)
             self._engine.configure(self._cfg, self._templates)

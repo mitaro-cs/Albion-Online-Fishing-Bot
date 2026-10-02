@@ -219,7 +219,7 @@ class SplashMeter:
         if vals.size == 0:
             return None
         water = float(np.median(self.waters[-90:])) if len(self.waters) >= 5 else float(np.median(vals))
-        bright = vals > water + max(40.0, 0.45 * water)
+        bright = vals > water + max(22.0, 0.55 * water)  # on dark night water the bubbles are dim too
         if self.peak is not None:
             bright &= vals > self.peak[ring] + self.MARGIN
         n = int(bright.sum())

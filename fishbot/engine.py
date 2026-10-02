@@ -24,8 +24,7 @@ from .capture import Screen
 from .config import Config, Region
 from .controller import ReelController
 from .catches import CatchLog, find_banner, top_area
-from .learn import (find_float, find_green_bar, find_marker, find_new_bar, find_new_object, find_reel_band,
-                    green_span)
+from .learn import find_float, find_green_bar, find_new_object, find_reel_band, green_span
 from .controls import Input
 from .system import beep, foreground_title
 from .vision import (BarFinder, BLUE, GREEN, PINK, RED, YELLOW, Match, SplashMeter, TemplateFinder, VisionError,
@@ -141,6 +140,8 @@ class Engine:
         self._per_cast = False      # the float is learned on every cast (auto-learn), not kept
         self._landed: tuple | None = None  # (x, y, Match) where the float was just found, area coordinates
         self._nothing_landed = False  # the last cast put nothing new on the water
+        self._aim: tuple[int, int] | None = None  # the cursor target, taken when fishing starts
+        self._reaim = False
         self._landings: deque[tuple[float, float]] = deque(maxlen=7)  # where real floats landed, from the aim
         self._landed_at: tuple[float, float] | None = None  # this cast's float, screen coordinates
         self._last_try = True
@@ -213,6 +214,7 @@ class Engine:
         self._point_index = 0
         self._float_known = False
         self._landings.clear()  # the player may stand elsewhere now
+        self._aim, self._reaim = None, False
         self.status = "running"
         self._thread = threading.Thread(target=self._main, name="fishbot-engine", daemon=True)
         self._thread.start()
@@ -332,6 +334,10 @@ class Engine:
                     if countdown:
                         self._countdown()
                         countdown = False
+                        if self._aim is None or self._reaim:
+                            # where the player pointed when starting: every cast goes there, even if
+                            # the mouse is moved meanwhile (a click over land walks the character away)
+                            self._aim, self._reaim = self.inp.position(), False
                     self._tick()
                     cfg = self._refresh()
                     self._session_gate(cfg)
@@ -341,6 +347,7 @@ class Engine:
                     self._cooldown(cfg)
                 except _Pause:
                     self.inp.release()
+                    self._reaim = self.pause_reason != "focus"  # the player paused: they may aim anew
                     self._wait_resume()
                     countdown = True
                 except VisionError:
@@ -523,7 +530,7 @@ class Engine:
         if c.target in ("points", "auto") and c.points:
             p = c.points[self._point_index % len(c.points)]
             return int(p[0]), int(p[1])
-        return None
+        return self._aim if c.target == "cursor" else None
 
     def _wait_bobber(self, cfg: Config) -> Match | None:
         self._set_stage("land")
@@ -962,9 +969,13 @@ class Engine:
         return cfg
 
     def _learn_reel(self, cfg: Config) -> Config | None:
+        """Find Albion's minigame band on screen once it has stopped zooming in.
+
+        Only the band itself is accepted (blue progress bar under it, red chevrons at both ends):
+        guessing a "bar" from whatever changed on screen locked onto surf and UI and then never let go.
+        """
         mon = self._monitor_region()
         before = after = self._learn_ref
-        rejected: list[tuple[int, int]] = []
         deadline = self.clock.now() + max(2.5, cfg.reel.appear_timeout_s)
         last = None
         while self.clock.now() < deadline:
@@ -976,59 +987,23 @@ class Engine:
             steady = (band is not None and last is not None and abs(band[0] - last[0]) <= 3
                       and abs(band[2] - last[2]) <= max(3, 0.03 * band[2]))
             last = band
-            if steady:
-                bx, by, bw, bh = band
-                top = max(0, by - bh)
-                region = Region(mon.left + bx, mon.top + top, bw, by + bh - top + 1)
-                finder = BarFinder()
-                shot = self._grab(region)
-                finder.remember(shot)
-                if find_float(after[top:by + bh + 1, bx:bx + bw]) is not None and finder.find(shot):
-                    self._marker = finder
-                    self._adopt_cfg({"regions": {"reel": asdict(region)}, "reel": {"method": "bar"}}, forget="marker")
-                    cfg = self._cfg
-                    self._emit("learn_bar", "success", w=bw)
-                    shot = after.copy()
-                    cv2.rectangle(shot, (bx, top), (bx + bw, by + bh), (99, 230, 245), 2)
-                    self._debug("bar-learned", shot)
-                    return cfg
-            if band is not None:
-                continue  # Albion's band is in sight, just not steady yet: look again
-            bar = find_new_bar(before, after) if before is not None else None
-            if bar is None:
+            if not steady:
                 continue
-            bx, by, bw, bh = bar
-            found = find_marker(after[by:by + bh, bx:bx + bw])
-            if found is None:
-                continue
-            tpl, _ = found
-            region = Region(mon.left + bx, mon.top + by, bw, bh)
-            if any(abs(bx - rx) < 12 and abs(by - ry) < 12 for rx, ry in rejected):
-                continue
-            try:
-                finder = TemplateFinder(tpl, cfg.reel.grayscale, "marker")
-            except VisionError:
-                continue
-            xs, scores = [], []
-            for _ in range(8):  # the real marker moves; a static icon or text does not
-                self._sleep(0.05)
-                mm = finder.find(self._grab(region))
-                if mm is not None:
-                    xs.append(mm.x)
-                    scores.append(mm.score)
-            if len(xs) < 5 or max(xs) - min(xs) < 3:
-                rejected.append((bx, by))
-                self._debug("bar-static", after)
-                continue
-            self._marker = finder
-            threshold = round(min(0.62, max(0.4, min(scores) * 0.75)), 2)  # it changes background as it moves
-            cfg = self._adopt("marker", tpl, {"regions": {"reel": asdict(region)},
-                                              "reel": {"method": "template", "threshold": threshold}})
-            self._emit("learn_bar", "success", w=bw)
-            shot = after.copy()
-            cv2.rectangle(shot, (bx, by), (bx + bw, by + bh), (99, 230, 245), 2)
-            self._debug("bar-learned", shot)
-            return cfg
+            bx, by, bw, bh = band
+            top = max(0, by - bh)
+            region = Region(mon.left + bx, mon.top + top, bw, by + bh - top + 1)
+            finder = BarFinder()
+            shot = self._grab(region)
+            finder.remember(shot)
+            if find_float(after[top:by + bh + 1, bx:bx + bw]) is not None and finder.find(shot):
+                self._marker = finder
+                self._adopt_cfg({"regions": {"reel": asdict(region)}, "reel": {"method": "bar"}}, forget="marker")
+                cfg = self._cfg
+                self._emit("learn_bar", "success", w=bw)
+                shot = after.copy()
+                cv2.rectangle(shot, (bx, top), (bx + bw, by + bh), (99, 230, 245), 2)
+                self._debug("bar-learned", shot)
+                return cfg
         self._emit("learn_bar_fail", "warn")
         self._debug("bar-before", before)
         self._debug("bar-after", after)
@@ -1153,8 +1128,6 @@ class Engine:
     def _cooldown(self, cfg: Config) -> None:
         s = cfg.session
         dur = (s.cooldown_ms + self.rng.uniform(0, s.cooldown_jitter_ms)) / 1000
-        if self._loot_due:
-            dur += 1.0  # the character puts the fish away first; a cast before that is ignored
         self._set_stage("cooldown", dur)
         end = self.clock.now() + dur
         if self._loot_due:  # read the catch banner within the pause, not on top of it

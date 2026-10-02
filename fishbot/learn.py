@@ -29,9 +29,11 @@ def find_new_object(before: list[np.ndarray], after: list[np.ndarray], near: tup
     ref, now = median_frame(before), median_frame(after)
     # every pixel's brightness range over the shots before the cast: surf rolling in and out,
     # glints and ripples stay inside it; the float that landed falls far outside it
-    shots = np.stack([_gray(b) for b in before])
-    low, high, cur = shots.min(axis=0), shots.max(axis=0), _gray(now)
-    diff = np.clip(np.maximum(cur - high, low - cur), 0, 255).astype(np.uint8)
+    # (per colour channel: a red float on blue water is far out in red even where its brightness
+    # is like the white bubbles of a fishing spot)
+    shots = np.stack(before).astype(np.int16)
+    low, high, cur = shots.min(axis=0), shots.max(axis=0), now.astype(np.int16)
+    diff = np.clip(np.maximum(cur - high, low - cur), 0, 255).max(axis=2).astype(np.uint8)
     mask = (diff > 28).astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))   # drops the thin fishing line
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))

@@ -170,10 +170,9 @@ def test_finds_the_bobber_again_after_the_player_moves():
     rig.game.spots = [{"x": 1150.0, "y": 430.0, "fish": 10 ** 6, "respawn": 0.0}]
     rig.cfg.cast.points = [[1150, 430]]
     rig.engine.configure(rig.cfg, rig.templates)   # old bobber area (650..950, 200..400) is now wrong
-    _fish_until(rig, 5)
+    _fish_until(rig, 5)  # the float is found afresh where it lands on every cast
     rig.engine.stop()
     rig.engine.join(5)
-    assert "relocate" in rig.codes()
     r = rig.engine._cfg.regions.bobber
     assert r.left <= 1150 <= r.left + r.width and r.top <= 430 <= r.top + r.height
 
@@ -182,12 +181,12 @@ def test_relearns_a_bobber_that_looks_different():
     rig = Rig(seed=22)
     rig.engine.start()
     _fish_until(rig, 2)
-    rig.game.skin = 1  # another float (or night light): the learned picture stops matching
+    rig.game.skin = 1  # another float (or night light): its picture is taken afresh on every cast
+    misses = rig.engine.stats.misses
     _fish_until(rig, 5, timeout=150)
     rig.engine.stop()
     rig.engine.join(5)
-    codes = rig.codes()
-    assert "relearn_bobber" in codes and "learn_bobber" in codes
+    assert rig.engine.stats.misses - misses <= 1 and rig.game.early == 0
 
 
 def test_uses_bait_at_start_and_when_it_runs_out():
@@ -218,7 +217,9 @@ def test_next_cast_follows_the_pause_setting():
             nxt = next((x for x in rig.events[i:] if x["code"] == "cast"), None)
             if nxt:
                 gaps.append(nxt["t"] - e["t"])
-    assert gaps and max(gaps) < 1.0, gaps  # no hidden wait for the loot banner
+    # no hidden wait for the loot banner: just the ~0.6 s look at the water before casting
+    # (what the water does on its own, to tell the float that lands from surf and glints)
+    assert gaps and max(gaps) < 1.5, gaps
 
 
 def test_relearns_the_bar_when_the_minigame_moves():

@@ -42,8 +42,8 @@ def test_engine_learns_the_bite_sound_and_uses_it():
     prints = rig.engine._cfg.bite.sound_prints
     assert len(prints) >= 2 and "learn_sound" in rig.codes()
     assert any("sound_prints" in p.get("bite", {}) for p in learned)  # handed over to be saved
-    assert triggers[:2] != ["sound", "sound"]   # not trusted before it is learned
-    assert "sound" in triggers[2:]               # then it helps
+    # the splash at the float is what hooks; the sound may only confirm it, never hook on its own
+    assert set(triggers) <= {"splash", "sound"} and triggers[:2] != ["sound", "sound"]
 
 
 def test_bite_print_rejects_other_game_sounds():

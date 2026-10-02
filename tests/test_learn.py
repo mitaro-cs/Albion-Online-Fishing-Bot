@@ -62,14 +62,16 @@ def test_learned_data_is_saved_to_profile(tmp_path):
 
 
 def test_finds_out_which_way_holding_pushes():
-    for invert, expected in ((True, "left"), (False, "right")):
+    # in Albion holding reels right, so that is assumed (no time lost probing at the start of a
+    # minigame); if fish keep escaping that way, the bot finds out which way it really goes
+    for invert, expected, probes in ((True, "left", 1), (False, "right", 0)):
         eng, game, events = fresh_rig(seed=5)
         game.invert = invert
         eng.start()
-        eng.join(120)
+        eng.join(180)
         assert eng.stats.catches == 4, (invert, [e["code"] for e in events])
         assert eng._cfg.reel.hold_moves == expected
-        assert [e["code"] for e in events].count("learn_hold") == 1
+        assert [e["code"] for e in events].count("learn_hold") == probes
 
 
 def test_ignores_static_panel_and_heals_a_wrong_bar():
@@ -91,7 +93,8 @@ def test_ignores_static_panel_and_heals_a_wrong_bar():
     a_icon = game2.render(Region(505, 440, 30, 38))
     game2._set("idle")
     cfg = eng2._cfg.merged({"regions": {"reel": {"left": 505, "top": 440, "width": panel.width - 10, "height": 38}},
-                            "reel": {"method": "template"}})
+                            "reel": {"method": "template"},
+                            "system": {"relearn_on_start": False}})  # keep it, to see the bot heal it
     eng2.configure(cfg, {"marker": a_icon})
     eng2.start()
     eng2.join(200)

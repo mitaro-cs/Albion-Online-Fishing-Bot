@@ -27,26 +27,27 @@ def find_new_object(before: list[np.ndarray], after: list[np.ndarray], near: tup
     """Template + bbox (x, y, w, h) of the compact object that appeared, preferring ones near ``near``
     and ignoring anything farther than ``reach`` from it (UI that changed meanwhile, other players)."""
     ref, now = median_frame(before), median_frame(after)
-    noise = 0.0
-    if len(before) >= 2:  # how much the water alone moves between shots
-        # a loot banner or a passer-by changing in one place is not the water: keep it from
-        # raising the bar so high that the float itself no longer counts
-        noise = min(float(np.percentile(np.abs(_gray(before[0]) - _gray(before[-1])), 97)), 40.0)
-    diff = np.abs(_gray(now) - _gray(ref)).astype(np.uint8)
-    mask = (diff > max(28.0, noise * 1.3)).astype(np.uint8) * 255
+    # every pixel's brightness range over the shots before the cast: surf rolling in and out,
+    # glints and ripples stay inside it; the float that landed falls far outside it
+    shots = np.stack([_gray(b) for b in before])
+    low, high, cur = shots.min(axis=0), shots.max(axis=0), _gray(now)
+    diff = np.clip(np.maximum(cur - high, low - cur), 0, 255).astype(np.uint8)
+    mask = (diff > 28).astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))   # drops the thin fishing line
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    n, _, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
     lo, hi = 30 * scale * scale, 6000 * scale * scale
     found = []
     for i in range(1, n):
         x, y, w, h, area = (int(v) for v in stats[i])
         if not lo <= area <= hi or not 0.25 <= w / max(h, 1) <= 4:
             continue
-        strength = float(diff[y:y + h, x:x + w].mean())
+        # how far its brightest part is out of the water's own range: a float is far out,
+        # surf, sparkles and a passer-by's edge only a little
+        strength = float(np.percentile(diff[y:y + h, x:x + w][labels[y:y + h, x:x + w] == i], 90))
         fill = area / float(w * h)
-        if strength < 25 or fill < 0.25:
-            continue  # surf along the shore and sparkling water: faint, ragged and spread out
+        if strength < 95 or fill < 0.25:
+            continue
         dist = float(np.hypot(cents[i][0] - near[0], cents[i][1] - near[1]))
         if reach is not None and dist > reach:
             continue
@@ -165,6 +166,50 @@ def green_span(strip: np.ndarray, frac: float = 0.15) -> tuple[float, float] | N
     if best[1] - best[0] < max(3, w * 0.02):
         return None
     return best[0] / w, best[1] / w
+
+
+def _chevron(hsv: np.ndarray) -> np.ndarray:
+    """The band's red/orange/yellow chevron colour (grass and water are much darker or bluer)."""
+    hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    return ((hue <= 32) | (hue >= 165)) & (sat > 120) & (val > 140)
+
+
+def find_reel_band(frame: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Albion's minigame band as (x, y, w, h), anchored on the progress bar under it.
+
+    The band itself is see-through — grass and water show through its green — so on its own it is
+    easy to confuse with the scenery. Right under it sits an opaque, bright blue progress bar of the
+    same width: a long thin blue strip with red chevrons straight above both of its ends is the band.
+    """
+    H, W = frame.shape[:2]
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    blue = cv2.inRange(hsv, (95, 150, 120), (120, 255, 255))  # vivid: night-tinted rocks and water are greyer
+    blue = cv2.morphologyEx(blue, cv2.MORPH_CLOSE, np.ones((1, 31), np.uint8))  # over the fish icon
+    n, _, stats, _ = cv2.connectedComponentsWithStats(blue, connectivity=8)
+    best = None
+    for i in range(1, n):
+        x, y, w, h, area = (int(v) for v in stats[i])
+        if w < 0.04 * W or w < 6 * h or not 5 <= h <= max(0.05 * H, 40) or area / float(w * h) < 0.6:
+            continue
+        top = max(0, y - 3 * h)
+        chev = _chevron(hsv[top:y, max(0, x - h):min(W, x + w + h)])
+        if chev.size == 0:
+            continue
+        end = max(4, w // 8)
+        left = chev[:, :end + h].mean(axis=1) > 0.08
+        right = chev[:, -(end + h):].mean(axis=1) > 0.08
+        rows = np.where(left & right)[0]
+        if rows.size < 5:
+            continue
+        y0, y1 = top + int(rows[0]), top + int(rows[-1])
+        middle = _chevron(hsv[y0:y1 + 1, x + w // 3:x + 2 * w // 3])
+        if middle.size == 0 or middle.mean() > 0.3:
+            continue  # red all the way across: a health bar over a mana bar, not the band
+        cols = np.where(_chevron(hsv[y0:y1 + 1, max(0, x - h):min(W, x + w + h)]).mean(axis=0) > 0.25)[0]
+        x0, x1 = (max(0, x - h) + int(cols[0]), max(0, x - h) + int(cols[-1]) + 1) if cols.size else (x, x + w)
+        if best is None or w > best[2]:
+            best = (x0, y0, x1 - x0, y1 - y0 + 1)
+    return best
 
 
 def find_green_bar(frame: np.ndarray) -> tuple[int, int, int, int] | None:

@@ -102,24 +102,70 @@ class BarFinder:
     """Albion reel minigame: the bobber (white float) on the green/red band.
 
     The search region spans the band plus the space above it (the bobber sticks up).
-    ``zone`` holds the green span of the last frame; no green means the minigame is over.
+    ``zone`` holds the green span of the last frame; no band means the minigame is over. The band
+    must really be there — or grass, flowers and mushrooms left in the region once the minigame
+    closes would keep it "going". Once ``remember`` has seen it, its two chevron ends are checked
+    against how they looked; before that, by colour (red ends, bright green between them).
     """
+
+    BAND = 0.45  # the band is the lower part of the region
 
     def __init__(self):
         self.zone: tuple[float, float] | None = None
+        self.ends: tuple[np.ndarray, np.ndarray] | None = None
+        self.present = False  # the band was on screen in the last frame
+
+    @staticmethod
+    def _gray(img: np.ndarray) -> np.ndarray:
+        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+    def remember(self, frame: np.ndarray) -> None:
+        """Keep the look of the band's chevron ends, from a frame with the minigame on screen."""
+        band = self._gray(frame[int(frame.shape[0] * self.BAND):])
+        e = max(6, int(band.shape[1] * 0.12))
+        if band.shape[1] > 4 * e and float(band[:, :e].std()) > 3 and float(band[:, -e:].std()) > 3:
+            self.ends = (band[:, :e].copy(), band[:, -e:].copy())
+
+    def band_present(self, band: np.ndarray) -> bool:
+        if self.ends is not None:
+            g = self._gray(band)
+            left, right = self.ends
+            e, slack = left.shape[1], 4
+            if g.shape[0] != left.shape[0] or g.shape[1] < 2 * (e + slack):
+                return False
+            seen = 0
+            for tpl, area in ((left, g[:, :e + slack]), (right, g[:, -(e + slack):])):
+                res = np.nan_to_num(cv2.matchTemplate(area, tpl, cv2.TM_CCOEFF_NORMED))
+                seen += float(res.max()) >= 0.6
+            return seen >= 1  # the float sitting on one end hides it; once the minigame closes both go
+        hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+        hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+        W = band.shape[1]
+        end = max(4, int(W * 0.12))
+        chevron = ((((hue <= 32) | (hue >= 165)) & (sat > 120) & (val > 140)).mean(axis=0) > 0.25)
+        if chevron[:end].sum() < 2 or chevron[-end:].sum() < 2:
+            return False
+        green = (hue >= 35) & (hue <= 90) & (sat >= 120) & (val >= 90)
+        return float(green[:, end:-end].mean()) >= 0.35
 
     def find(self, frame: np.ndarray) -> Match | None:
         from .learn import find_float, green_span
         h = frame.shape[0]
-        band = frame[int(h * 0.45):]             # lower part of the region is the band itself
+        top = int(h * self.BAND)
+        band = frame[top:]
+        self.present = self.band_present(band)
+        if not self.present:
+            self.zone = None
+            return None
         self.zone = green_span(band, 0.3)
         if self.zone is None:
             return None
-        f = find_float(frame)
+        lo = int(h * 0.35)  # the float's white body rides on the band, not above it (mushrooms, names)
+        f = find_float(frame[lo:])
         if f is None:
             return None
         cx, cy, w, hh, area = f
-        return Match(cx, cy, w, hh, 1.0, area)
+        return Match(cx, cy + lo, w, hh, 1.0, area)
 
 
 class SplashMeter:
@@ -134,7 +180,7 @@ class SplashMeter:
 
     JUMP_S = (0.15, 0.03)  # "just before" window for the jump, seconds back from now
     DECAY = 1.0            # how fast a pixel forgets a bright moment, brightness levels per frame
-    INNER, SPREAD, ARM, MARGIN = 0.45, 3, 16, 10
+    INNER, SPREAD, ARM, MARGIN = 0.45, 3, 10, 10
 
     def __init__(self, size: float):
         self.r1 = max(12, int(round(1.35 * size)))
@@ -148,8 +194,11 @@ class SplashMeter:
         self._v: np.ndarray | None = None
         self._kernel = np.ones((self.SPREAD, self.SPREAD), np.uint8)
 
-    def share(self, frame: np.ndarray, x: float, y: float) -> float | None:
-        """Share of the ring around (x, y) that is freshly much brighter than it was."""
+    def share(self, frame: np.ndarray, x: float, y: float, float_box=None) -> float | None:
+        """Share of the ring around (x, y) that is freshly much brighter than it was.
+
+        ``float_box`` (x, y, w, h in frame coordinates) is where the float is right now: it is left
+        out, so the float jerking about (a nibble) is never taken for foam."""
         r = self.r1
         x0, y0 = int(round(x)) - r, int(round(y)) - r
         if x0 < 0 or y0 < 0 or x0 + 2 * r > frame.shape[1] or y0 + 2 * r > frame.shape[0]:
@@ -157,12 +206,19 @@ class SplashMeter:
             return None
         v = frame[y0:y0 + 2 * r, x0:x0 + 2 * r].max(axis=2)
         self._v = v
-        ring = v[self.ring]
-        water = float(np.median(self.waters[-90:])) if len(self.waters) >= 5 else float(np.median(ring))
-        bright = ring > water + max(40.0, 0.45 * water)
+        ring = self.ring
+        if float_box is not None:
+            bx, by, bw, bh = (int(round(c)) for c in float_box)
+            ring = ring.copy()
+            ring[max(0, by - y0 - 2):max(0, by - y0 + bh + 2), max(0, bx - x0 - 2):max(0, bx - x0 + bw + 2)] = False
+        vals = v[ring]
+        if vals.size == 0:
+            return None
+        water = float(np.median(self.waters[-90:])) if len(self.waters) >= 5 else float(np.median(vals))
+        bright = vals > water + max(40.0, 0.45 * water)
         if self.peak is not None:
-            bright &= ring > self.peak[self.ring] + self.MARGIN
-        return float(bright.mean())
+            bright &= vals > self.peak[ring] + self.MARGIN
+        return float(bright.sum()) / float(self.ring.sum())
 
     def threshold(self) -> float | None:
         """Share that counts as a splash, from the calm so far (None until enough is known)."""

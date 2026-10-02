@@ -106,7 +106,7 @@ class Api:
                 self._templates = self._store.templates(self._profile)
                 # v4: the bite is the splash at the float; "float under for 200 ms" came too late for it
                 self._cfg = self._cfg.merged({"regions": {"reel": asdict(Region())},
-                                              "reel": {"method": "bar", "hold_moves": "auto"},
+                                              "reel": {"method": "bar", "hold_moves": "right"},
                                               "bite": {"confirm_ms": BiteCfg().confirm_ms,
                                                        "bite_timeout_s": max(self._cfg.bite.bite_timeout_s,
                                                                              BiteCfg().bite_timeout_s)},

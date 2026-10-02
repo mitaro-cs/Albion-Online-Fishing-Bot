@@ -24,7 +24,8 @@ from .capture import Screen
 from .config import Config, Region
 from .controller import ReelController
 from .catches import CatchLog, find_banner, top_area
-from .learn import find_float, find_green_bar, find_marker, find_new_bar, find_new_object, green_span
+from .learn import (find_float, find_green_bar, find_marker, find_new_bar, find_new_object, find_reel_band,
+                    green_span)
 from .controls import Input
 from .system import beep, foreground_title
 from .vision import (BarFinder, BLUE, GREEN, PINK, RED, YELLOW, Match, SplashMeter, TemplateFinder, VisionError,
@@ -140,6 +141,8 @@ class Engine:
         self._per_cast = False      # the float is learned on every cast (auto-learn), not kept
         self._landed: tuple | None = None  # (x, y, Match) where the float was just found, area coordinates
         self._nothing_landed = False  # the last cast put nothing new on the water
+        self._landings: deque[tuple[float, float]] = deque(maxlen=7)  # where real floats landed, from the aim
+        self._landed_at: tuple[float, float] | None = None  # this cast's float, screen coordinates
         self._last_try = True
         self._float_known = False   # announced "learned the float" once this session
 
@@ -209,6 +212,7 @@ class Engine:
         self._avoid.clear()
         self._point_index = 0
         self._float_known = False
+        self._landings.clear()  # the player may stand elsewhere now
         self.status = "running"
         self._thread = threading.Thread(target=self._main, name="fishbot-engine", daemon=True)
         self._thread.start()
@@ -401,6 +405,10 @@ class Engine:
             spot = TemplateFinder(tpl["spot"], True, "spot")
         if cfg.cast.target == "points" and not cfg.cast.points:
             raise VisionError("points_missing", name="cast")
+        old = getattr(self, "_marker", None)
+        if isinstance(marker, BarFinder) and isinstance(old, BarFinder) and old.ends is not None                 and r.reel == getattr(self, "_marker_region", None):
+            marker.ends = old.ends  # same bar: keep how its ends look (a settings change rebuilds the finders)
+        self._marker_region = r.reel
         self._bobber, self._marker, self._spot = bobber, marker, spot
 
     # ── one fishing cycle ───────────────────────────────────────────────────
@@ -413,6 +421,7 @@ class Engine:
                 self._bobber = self._landed = None
                 self._per_cast = True
             self._nothing_landed = False
+            self._landed_at = None
             self._cast(cfg, retry=attempt > 0)
             learned = self._bobber is not None
             self._last_try = attempt == 2
@@ -450,6 +459,8 @@ class Engine:
         result, took = self._reel(cfg)
         if result != "no_game":
             self._learn_sound()
+            if self._landed_at and self._target:  # a real bite: that was our float
+                self._landings.append((self._landed_at[0] - self._target[0], self._landed_at[1] - self._target[1]))
         if result == "caught":
             s = self.stats
             s.catches += 1
@@ -564,10 +575,10 @@ class Engine:
 
     def _bar_moved(self) -> bool:
         """Is a reel bar visible somewhere other than the learned area?"""
-        from .learn import find_green_bar
         mon, old = self._monitor_region(), self._cfg.regions.reel
         top = mon.top + mon.height // 3
-        band = find_green_bar(self._grab(Region(mon.left, top, mon.width, mon.height - mon.height // 3)))
+        shot = self._grab(Region(mon.left, top, mon.width, mon.height - mon.height // 3))
+        band = find_reel_band(shot) or find_green_bar(shot)
         if band is None:
             return False
         bx, by, bw, bh = band
@@ -680,7 +691,8 @@ class Engine:
                         and np.ptp([x for x, _, _ in still]) < 0.5 and np.ptp([y for _, y, _ in still]) < 0.5):
                     log.info("the tracked float never moves: it is not the float")
                     return None  # a float always bobs; this is a rock, a reflection or a piece of UI
-            share = meter.share(frame, bx, by)
+            box = (m.x - m.w / 2, m.y - m.h / 2, m.w, m.h) if m is not None and self._present(m, b) else None
+            share = meter.share(frame, bx, by, box)
             limit = meter.threshold()
             foam = t >= calm_until and share is not None and meter.feed(t, share)
             if foam:
@@ -731,16 +743,25 @@ class Engine:
         ctrl = ReelController(rc) if rc.hold_moves != "auto" else None
         t0 = self.clock.now()
         appear_by = t0 + rc.appear_timeout_s
-        started = last_seen = last_x = None
+        started = last_seen = last_x = last_zone = shown = None
         frames, result, frame = 0, None, None
         xs: list[float] = []
         learned = cfg.system.auto_learn
         self.reel_target = None
+        rlog = logging.getLogger("fishbot.reel")
         try:
             while True:
                 t = self.clock.now()
                 frame = self._grab(region)
                 m = self._marker.find(frame)
+                if isinstance(self._marker, BarFinder) and self._marker.ends is None:
+                    # a bar from the profile: learn how its ends look once it stopped zooming in
+                    if self._marker.present:
+                        shown = shown or t
+                        if t - shown >= 0.3:
+                            self._marker.remember(frame)
+                    else:
+                        shown = None
                 if self._present(m, rc):
                     span = max(1.0, frame.shape[1] - (m.w if rc.method == "template" else 0))
                     x = (m.x - (m.w / 2 if rc.method == "template" else 0)) / span
@@ -753,10 +774,11 @@ class Engine:
                         rc = replace(rc, hold_moves=self._probe_hold(region, rc, span,
                                                                      m.w if rc.method == "template" else 0))
                         ctrl = ReelController(rc)
-                        t = self.clock.now()
+                        t = self.clock.now()  # the probe took a while: don't take that for the end
                     last_seen, last_x, self.reel_x = t, x, x
                     # keep the marker in the middle of the green zone, wherever it is
                     zone = self._marker.zone if isinstance(self._marker, BarFinder) else green_span(frame)
+                    last_zone = zone or last_zone
                     tgt = band = None
                     if zone is not None:
                         W = frame.shape[1]
@@ -769,10 +791,13 @@ class Engine:
                             and t - started > 1.2):  # "marker" never moves: we learned the wrong thing
                         self._forget_bar()
                         return "no_game", 0.0
-                    if ctrl.update(x, t, tgt, band):
+                    hold = ctrl.update(x, t, tgt, band)
+                    if hold:
                         self.inp.down()
                     else:
                         self.inp.up()
+                    rlog.debug("t=%.2f x=%.3f target=%s zone=%s hold=%d", t - t0, x, tgt and round(tgt, 3),
+                               zone and tuple(round(z, 2) for z in zone), hold)
                 elif started is None:
                     if not moved and learned and t - t0 > 1.0 and self._bar_moved():
                         # the minigame is up, just not where it was (resolution, UI scale): learn it now
@@ -780,8 +805,10 @@ class Engine:
                         return self._reel(self._cfg, moved=True)
                     if t > appear_by:
                         return "no_game", 0.0
-                elif t - last_seen > rc.end_confirm_ms / 1000:
-                    break
+                elif isinstance(self._marker, BarFinder) and self._marker.present:
+                    last_seen = t  # the band is still up, the float just wasn't made out this frame
+                elif t - last_seen > (rc.end_confirm_ms / 1000 if t - started > 1.0 else 1.0):
+                    break  # the band itself is gone: the minigame is over (it zooms in for a moment first)
                 if started is not None and t - started > rc.max_duration_s:
                     result = "timeout"
                     break
@@ -799,7 +826,11 @@ class Engine:
         took = (last_seen - started) if started is not None else 0.0
         if result:
             return result, took
-        outcome = "escaped" if last_x is not None and (last_x < 0.03 or last_x > 0.97) else "caught"
+        # the fish gets away once the float is dragged out of the green into a red end
+        lo, hi = (last_zone[0] - 0.02, last_zone[1] + 0.02) if last_zone else (0.08, 0.92)
+        outcome = "escaped" if last_x is not None and (last_x < lo or last_x > hi) else "caught"
+        logging.getLogger("fishbot.reel").info("minigame over after %.1fs, marker last at %s: %s", took,
+                                               last_x and round(last_x, 3), outcome)
         if outcome == "escaped" and frame is not None:
             self._debug("escaped", frame)
         return outcome, took
@@ -859,6 +890,7 @@ class Engine:
             if r is not None and h is not None:
                 samples.append(h - r)
         self.inp.up()
+        logging.getLogger("fishbot.reel").info("hold probe: %s", [round(v, 2) for v in samples])
         if not samples or abs(float(np.mean(samples))) < 0.4 or len(set(np.sign(samples))) > 1:
             return "right"  # couldn't tell: common default for now, ask again next fish
         way = "right" if np.mean(samples) > 0 else "left"
@@ -880,10 +912,13 @@ class Engine:
     def _snap_water(self, x: int, y: int):
         region = self._wide_area(x, y)  # the cast can land well past the cursor
         left, top = region.left, region.top
+        if self._landings:  # it lands about where it landed before: look there first (not at a neighbour's)
+            x = x + statistics.median(dx for dx, _ in self._landings)
+            y = y + statistics.median(dy for _, dy in self._landings)
         frames = []
-        for _ in range(3):
+        for _ in range(8):  # ~0.6 s: long enough to see how far the water around moves on its own
             frames.append(self._grab(region))
-            self._sleep(0.06)
+            self._sleep(0.08)
         return region, frames, (x - left, y - top), self._monitor_region().height / 1080
 
     def _learn_bobber(self, cfg: Config) -> Config | None:
@@ -909,6 +944,7 @@ class Engine:
         area = Region(int(min(max(cx - sw // 2, mon.left), mon.left + mon.width - sw)),
                       int(min(max(cy - sh // 2, mon.top), mon.top + mon.height - sh)), sw, sh)
         self._landed = (float(cx - area.left), float(cy - area.top), Match(cx - area.left, cy - area.top, bw, bh, 1.0, 0))
+        self._landed_at = (float(cx), float(cy))
         logging.getLogger("fishbot.bite").info("float found at (%d, %d), %d×%d", cx, cy, bw, bh)
         shot = after[-1].copy()
         cv2.rectangle(shot, (bx, by), (bx + bw, by + bh), (99, 230, 245), 1)
@@ -934,7 +970,8 @@ class Engine:
         while self.clock.now() < deadline:
             self._sleep(0.04 if last is not None else 0.12)  # a band in sight: look again soon
             after = self._grab(mon)
-            band = find_green_bar(after)  # Albion's band: green middle, red chevron ends, bobber on top
+            # Albion's band: red chevron ends, see-through green middle, bobber on top, blue progress bar under
+            band = find_reel_band(after) or find_green_bar(after)
             # it zooms in when it appears: learn it once it stopped growing, not mid-animation
             steady = (band is not None and last is not None and abs(band[0] - last[0]) <= 3
                       and abs(band[2] - last[2]) <= max(3, 0.03 * band[2]))
@@ -944,7 +981,9 @@ class Engine:
                 top = max(0, by - bh)
                 region = Region(mon.left + bx, mon.top + top, bw, by + bh - top + 1)
                 finder = BarFinder()
-                if find_float(after[top:by + bh + 1, bx:bx + bw]) is not None and finder.find(self._grab(region)):
+                shot = self._grab(region)
+                finder.remember(shot)
+                if find_float(after[top:by + bh + 1, bx:bx + bw]) is not None and finder.find(shot):
                     self._marker = finder
                     self._adopt_cfg({"regions": {"reel": asdict(region)}, "reel": {"method": "bar"}}, forget="marker")
                     cfg = self._cfg
@@ -1008,7 +1047,7 @@ class Engine:
         self._adopt_cfg({}, forget="marker")
         self._adopt_cfg({"regions": {"bobber": asdict(Region()), "reel": asdict(Region())},
                          "bite": {"method": "template", "threshold": fresh.bite.threshold, "sound_prints": []},
-                         "reel": {"method": "bar", "hold_moves": "auto"}}, forget="bobber")
+                         "reel": {"method": "bar", "hold_moves": fresh.reel.hold_moves}}, forget="bobber")
         self._dirty = True
 
     def _forget_bar(self) -> None:

@@ -447,12 +447,12 @@ def demo_config() -> Config:
     cfg.regions.water = Region(WATER.left, WATER.top, WATER.width, WATER.height)
     cfg.regions.reel = Region(BAR.left, BAR.top - BAR.height, BAR.width, 2 * BAR.height + 1)
     cfg.reel.method = "bar"
-    cfg.system.learn_version = 3
+    cfg.system.learn_version = 4  # current: nothing for the loader to migrate
     cfg.system.require_focus = False
     cfg.system.sound = False
     cfg.system.start_delay_s = 1.0
     cfg.bite.settle_ms = 600
-    cfg.bite.bite_timeout_s = 12
+    cfg.bite.bite_timeout_s = 30
     cfg.session.cooldown_ms = 600
     cfg.session.cooldown_jitter_ms = 400
     return cfg

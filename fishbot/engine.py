@@ -684,7 +684,8 @@ class Engine:
         deadline, calm_until = t0 + b.bite_timeout_s, t0 + 0.3  # the landing splash is over by now
         bx, by = base.x, base.y
         # the ring is sized by the float (a picture that caught some splash too is larger than it)
-        meter = SplashMeter(min(max(base.w, base.h), 40 * self._monitor_region().height / 1080))
+        scale = self._monitor_region().height / 1080
+        meter = SplashMeter(min(max(base.w, base.h), 32 * scale))
         foam_since: float | None = None
         foam_peak = 0.0
         audio = self.audio if b.use_sound else None
@@ -704,7 +705,10 @@ class Engine:
                         and np.ptp([x for x, _, _ in still]) < 0.5 and np.ptp([y for _, y, _ in still]) < 0.5):
                     log.info("the tracked float never moves: it is not the float")
                     return None  # a float always bobs; this is a rock, a reflection or a piece of UI
-            box = (m.x - m.w / 2, m.y - m.h / 2, m.w, m.h) if m is not None and self._present(m, b) else None
+            box = None
+            if m is not None and self._present(m, b):
+                w, h = min(m.w, 26 * scale), min(m.h, 32 * scale)  # the float itself, not foam around it
+                box = (m.x - w / 2, m.y - h / 2, w, h)
             share = meter.share(frame, bx, by, box)
             limit = meter.threshold()
             foam = t >= calm_until and share is not None and meter.feed(t, share)

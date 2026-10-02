@@ -55,6 +55,16 @@ def find_new_object(before: list[np.ndarray], after: list[np.ndarray], near: tup
             continue
         # a float is small and solid: being bigger than one earns nothing
         size = np.sqrt(min(area, 400 * scale * scale))
+        bw, bh = int(24 * scale), int(30 * scale)
+        if w > bw or h > bh:
+            # it came out together with foam left by the last fish: keep a float-sized box around
+            # the part that stands out most
+            wgt = diff[y:y + h, x:x + w].astype(np.float32) * (labels[y:y + h, x:x + w] == i)
+            ys, xs = np.mgrid[0:h, 0:w]
+            cx, cy = x + float((xs * wgt).sum() / wgt.sum()), y + float((ys * wgt).sum() / wgt.sum())
+            w, h = min(w, bw), min(h, bh)
+            x, y = int(round(cx - w / 2)), int(round(cy - h / 2))
+            x, y = max(0, x), max(0, y)
         found.append((strength * size * fill / (1 + dist / (220 * scale)), (x, y, w, h)))
     pad = 3
     for _, (x, y, w, h) in sorted(found, reverse=True):

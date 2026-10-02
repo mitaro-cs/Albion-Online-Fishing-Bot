@@ -191,6 +191,7 @@ class SplashMeter:
         self.waters: list[float] = []
         self.peak: np.ndarray | None = None
         self.recent: deque[tuple[float, float]] = deque(maxlen=60)
+        self.active = False  # inside a splash that started with a jump
         self._v: np.ndarray | None = None
         self._kernel = np.ones((self.SPREAD, self.SPREAD), np.uint8)
 
@@ -210,7 +211,7 @@ class SplashMeter:
         if float_box is not None:
             bx, by, bw, bh = (int(round(c)) for c in float_box)
             ring = ring.copy()
-            ring[max(0, by - y0 - 2):max(0, by - y0 + bh + 2), max(0, bx - x0 - 2):max(0, bx - x0 + bw + 2)] = False
+            ring[max(0, by - y0 - 1):max(0, by - y0 + bh + 1), max(0, bx - x0 - 1):max(0, bx - x0 + bw + 1)] = False
         vals = v[ring]
         if vals.size == 0:
             return None
@@ -232,8 +233,12 @@ class SplashMeter:
         limit = self.threshold()
         before = [s for ts, s in self.recent if t - self.JUMP_S[0] <= ts <= t - self.JUMP_S[1]]
         self.recent.append((t, share))
-        foam = (limit is not None and share > limit and bool(before)
-                and share - min(before) > max(0.03, 0.5 * limit))
+        if self.active:  # a splash that started with a jump lasts as long as the foam stays up
+            foam = limit is not None and share > 0.8 * limit
+        else:
+            foam = (limit is not None and share > limit and bool(before)
+                    and share - min(before) > max(0.03, 0.5 * limit))
+        self.active = foam
         if not foam:
             self.calm.append(share)
             if self._v is not None:

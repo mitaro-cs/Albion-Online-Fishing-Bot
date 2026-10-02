@@ -705,10 +705,13 @@ class Engine:
                         and np.ptp([x for x, _, _ in still]) < 0.5 and np.ptp([y for _, y, _ in still]) < 0.5):
                     log.info("the tracked float never moves: it is not the float")
                     return None  # a float always bobs; this is a rock, a reflection or a piece of UI
-            box = None
-            if m is not None and self._present(m, b):
-                w, h = min(m.w, 26 * scale), min(m.h, 32 * scale)  # the float itself, not foam around it
-                box = (m.x - w / 2, m.y - h / 2, w, h)
+            # the float itself is left out of the ring: where it floats, or where it just jerked to —
+            # but not where the match jumped onto foam that looks like it (that would hide the bite)
+            fx, fy = bx, by
+            if m is not None and self._present(m, b) and abs(m.x - bx) < 0.4 * base.w and abs(m.y - by) < 0.6 * base.h:
+                fx, fy = m.x, m.y
+            w, h = min(base.w - 6, 20 * scale), min(base.h - 6, 26 * scale)  # its body, not the padded picture
+            box = (fx - w / 2, fy - h / 2, w, h)
             share = meter.share(frame, bx, by, box)
             limit = meter.threshold()
             foam = t >= calm_until and share is not None and meter.feed(t, share)
@@ -718,8 +721,9 @@ class Engine:
             else:
                 foam_since, foam_peak = None, 0.0
             heard = foam and audio is not None and audio.bite_heard(t - 0.6, b.sound_prints)
-            log.debug("t=%.2f share=%s limit=%s score=%.2f", t - t0, share and round(share, 3),
-                      limit and round(limit, 3), m.score if m else 0.0)
+            log.debug("t=%.2f share=%s limit=%s score=%.2f at=(%.0f,%.0f) match=(%.0f,%.0f)", t - t0,
+                      share and round(share, 3), limit and round(limit, 3), m.score if m else 0.0, bx, by,
+                      m.x if m else -1, m.y if m else -1)
             self._show(frame, "bobber", lambda img: self._draw_bite(img, m, base, by, foam))
             # a bite's splash keeps growing for a few frames; a bump that never gets going (the float
             # turning, a fish school fading out nearby) is not one

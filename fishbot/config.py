@@ -68,7 +68,7 @@ class BiteCfg:
     threshold: float = num(0.7, 0.3, 0.99, 0.01)
     settle_ms: int = num(1200, 0, 5000, 50, "ms")
     dip_px: int = num(6, 1, 60, 1, "px")
-    confirm_ms: int = num(60, 0, 2000, 10, "ms")  # how long the foam must last
+    confirm_ms: int = num(200, 0, 2000, 10, "ms")  # how long the foam must last: a fish only nibbling splashes briefly
     appear_timeout_s: float = num(6.0, 1, 30, 0.5, "s")
     bite_timeout_s: float = num(120.0, 5, 180, 1, "s")  # in the evening a bite can take over a minute
     hook_delay_ms: int = num(60, 0, 1500, 10, "ms")
